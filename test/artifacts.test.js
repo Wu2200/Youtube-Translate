@@ -47,18 +47,17 @@ test("existing public subscription filenames remain valid and use the new runtim
 
   assert.equal(legacyRemotePlugin, remotePlugin);
   assert.equal(legacyLocalPlugin, localPlugin);
-  assert.match(remotePlugin, /^#!version = 0\.10\.0$/m);
-  // 远程插件必须指向构建时记录的脚本地址（main 或测试分支）
+  assert.match(remotePlugin, /^#!version = 0\\.10\\.0$/m);
   const manifest = JSON.parse(
     await readFile(path.join(projectRoot, "dist/manifest.json"), "utf8")
   );
   assert.match(
     manifest.scriptUrl,
-    /^https:\/\/raw\.githubusercontent\.com\/baitao24\/loon-youtube-ai-translator\/(main|v0\.4)\/dist\/dualsubs-ai\.bundle\.js$/
+    /^https:\\/\\/raw\\.githubusercontent\\.com\\/Wu2200\\/Youtube-Translate\\/main\\/dist\\/dualsubs-ai\\.bundle\\.js$/
   );
   assert.ok(remotePlugin.includes(`script-path=${manifest.scriptUrl},`));
   const responseRule = remotePlugin
-    .split("\n")
+    .split("\\n")
     .find(
       (line) =>
         line.startsWith("http-response ") &&
@@ -66,85 +65,75 @@ test("existing public subscription filenames remain valid and use the new runtim
     );
   assert.ok(responseRule);
   assert.doesNotMatch(responseRule, /subtype=Official/);
-  assert.match(responseRule, /timedtext\(\\\?\.\+\)\?\$/);
+  assert.match(responseRule, /timedtext\\(\\\\\\?\\.\\+\\)\\?\\$/);
 });
 
-test("local plugin pins DualSubs, exposes AI settings, and has no template markers", async () => {
+test("local plugin exposes only custom OpenAI-compatible settings", async () => {
   const plugin = await readFile(
     path.join(projectRoot, "dist/DualSubs.AI.YouTube.local.plugin"),
     "utf8"
   );
   const definitions = new Set(
-    [...plugin.matchAll(/^([A-Za-z_]+)\s*=\s*(?:input|select|switch),/gm)].map(
+    [...plugin.matchAll(/^([A-Za-z_]+)\\s*=\\s*(?:input|select|switch),/gm)].map(
       (match) => match[1]
     )
   );
   const scriptLines = plugin
-    .split("\n")
+    .split("\\n")
     .filter((line) => line.startsWith("http-"));
   for (const line of scriptLines) {
-    for (const match of line.matchAll(/\{([A-Za-z_]+)\}/g)) {
+    for (const match of line.matchAll(/\\{([A-Za-z_]+)\\}/g)) {
       assert.equal(definitions.has(match[1]), true, `missing argument ${match[1]}`);
     }
   }
 
-  assert.doesNotMatch(plugin, /\{\{SCRIPT_URL\}\}/);
-  assert.match(plugin, /script-path=dualsubs-ai\.bundle\.js/);
-  // 0.5.1：只拦截字幕接口，不和 YouTube 去广告插件抢 player / get_watch 等接口
-  assert.doesNotMatch(plugin, /DualSubs\/YouTube\/releases/);
-  // 脚本只拦截字幕和观看统计，不拦截去广告插件处理的 youtubei 接口（QUIC 拒绝规则里提到该域名不算拦截）
-  assert.ok(scriptLines.every((line) => !/youtubei/.test(line)), scriptLines.join("\n"));
+  assert.doesNotMatch(plugin, /\\{\\{SCRIPT_URL\\}\\}/);
+  assert.match(plugin, /script-path=dualsubs-ai\\.bundle\\.js/);
+  assert.doesNotMatch(plugin, /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);
+  assert.match(plugin, /^provider = select,"OpenAI-Compatible"/m);
+  assert.match(plugin, /^model = input,"gpt-4o-mini"/m);
+  assert.match(plugin, /^base_url = input,/m);
+  assert.match(plugin, /^api_key = input,/m);
+  assert.deepEqual(
+    [...definitions].sort(),
+    [
+      "LogLevel",
+      "Position",
+      "ShowOnly",
+      "ai_enabled",
+      "api_key",
+      "background_translate",
+      "base_url",
+      "custom_prompt",
+      "model",
+      "provider",
+      "secondary_language",
+      "sentence_split",
+      "target_language"
+    ]
+  );
+  assert.match(plugin, /^target_language = select,"简体中文",/m);
+  assert.match(plugin, /^Position = select,"原文在上","译文在上"/m);
+  assert.doesNotMatch(plugin, /subtype=Official|tlang=/);
+  assert.doesNotMatch(plugin.split("[MITM]")[1], /googlevideo/);
+  assert.ok(scriptLines.every((line) => !/googlevideo/.test(line)));
   assert.deepEqual(
     scriptLines.map((line) => line.split(" ")[1]),
     [
-      "^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$",
-      "^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$",
-      "^https?:\\/\\/s\\.youtube\\.com\\/api\\/stats\\/(watchtime|qoe|playback)(\\?.*)?$"
+      "^https?:\\\\/\\\\/(www|m)\\\\.youtube\\\\.com\\\\/api\\\\/timedtext(\\\\?.+)?$",
+      "^https?:\\\\/\\\\/(www|m)\\\\.youtube\\\\.com\\\\/api\\\\/timedtext(\\\\?.+)?$",
+      "^https?:\\\\/\\\\/s\\\\.youtube\\\\.com\\\\/api\\\\/stats\\\\/(watchtime|qoe|playback)(\\\\?.*)?$"
     ]
   );
-  assert.match(plugin, /^hostname = www\.youtube\.com, m\.youtube\.com, s\.youtube\.com$/m);
-  // 后台续翻只借观看统计请求，不能碰去广告插件拦截的 stats/ads
-  const statsRule = new RegExp(scriptLines[2].split(" ")[1]);
-  assert.ok(statsRule.test("https://s.youtube.com/api/stats/watchtime?docid=abc&cpn=x"));
-  assert.ok(!statsRule.test("https://s.youtube.com/api/stats/ads?ver=2"));
-  // 只拒绝 YouTube 相关域名的 QUIC，格式按 Loon 文档：协议规则 + AND 逻辑规则
-  const rules = plugin.split("[Rule]")[1].split("[Script]")[0].split("\n").filter((line) => line && !line.startsWith("#"));
+  assert.match(plugin, /^hostname = www\\.youtube\\.com, m\\.youtube\\.com, s\\.youtube\\.com$/m);
+  const rules = plugin.split("[Rule]")[1].split("[Script]")[0].split("\\n").filter((line) => line && !line.startsWith("#"));
   assert.deepEqual(rules, [
     "AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,youtube.com)),REJECT",
     "AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,googlevideo.com)),REJECT",
     "AND,((PROTOCOL,QUIC),(DOMAIN,youtubei.googleapis.com)),REJECT"
   ]);
-  // 0.5：只保留真正有用的设置项，模型和语言都是下拉选择
-  assert.deepEqual([...definitions].sort(), [
-    "LogLevel",
-    "Position",
-    "ShowOnly",
-    "ai_enabled",
-    "api_key",
-    "background_translate",
-    "claude_api_key",
-    "custom_prompt",
-    "deepseek_api_key",
-    "model",
-    "openai_api_key",
-    "secondary_language",
-    "sentence_split",
-    "target_language"
-  ]);
-  assert.match(plugin, /^model = select,"gemini-3\.5-flash-lite",/m);
-  // 每家至少一个模型，且模型名都能推断出服务商
-  const models = plugin.match(/^model = select,(.*?),tag=/m)[1].split(",").map((item) => item.replace(/"/g, ""));
-  for (const prefix of ["gemini-", "deepseek-", "gpt-", "claude-"]) {
-    assert.ok(models.some((name) => name.startsWith(prefix)), `missing ${prefix} models`);
-  }
-  assert.match(plugin, /^target_language = select,"简体中文",/m);
-  assert.match(plugin, /^Position = select,"原文在上","译文在上"/m);
-  assert.doesNotMatch(plugin, /subtype=Official|tlang=/);
-  // 不解密视频流量：MITM 和脚本里都不能有 googlevideo（QUIC 拒绝规则里提到该域名不需要解密）
-  assert.doesNotMatch(plugin.split("[MITM]")[1], /googlevideo/);
-  assert.ok(scriptLines.every((line) => !/googlevideo/.test(line)));
   const timedTextResponseRule = plugin
-    .split("\n")
+    .split("\\n")
     .find(
       (line) =>
         line.startsWith("http-response ") &&

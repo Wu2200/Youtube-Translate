@@ -7,7 +7,7 @@ const projectRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const scriptUrlIndex = args.indexOf("--script-url");
 const defaultRemoteScriptUrl =
-  "https://raw.githubusercontent.com/baitao24/loon-youtube-ai-translator/main/dist/dualsubs-ai.bundle.js";
+  "https://raw.githubusercontent.com/Wu2200/Youtube-Translate/main/dist/dualsubs-ai.bundle.js";
 const remoteScriptUrl =
   scriptUrlIndex >= 0 ? args[scriptUrlIndex + 1] : defaultRemoteScriptUrl;
 
@@ -38,21 +38,18 @@ const sha256 = createHash("sha256").update(bundle).digest("hex");
 const distDir = resolve(projectRoot, "dist");
 await mkdir(distDir, { recursive: true });
 await writeFile(resolve(distDir, "dualsubs-ai.bundle.js"), bundle);
-// Keep the v0.2.x bundle URL working while installed clients refresh the plugin manifest.
 await writeFile(resolve(distDir, "yt-ai.bundle.js"), bundle);
 
 const localPlugin = pluginTemplate
   .replaceAll("{{SCRIPT_URL}}", "dualsubs-ai.bundle.js")
-  .replace(/^#!version\s*=.*$/m, `#!version = ${pkg.version}`);
+  .replace(/^#!version\\s*=.*$/m, `#!version = ${pkg.version}`);
 await writeFile(resolve(distDir, "DualSubs.AI.YouTube.local.plugin"), localPlugin);
-// Loon users may already reference the original filename from iCloud.
 await writeFile(resolve(distDir, "YouTube.AI.Translate.local.plugin"), localPlugin);
 
 const remotePlugin = pluginTemplate
   .replaceAll("{{SCRIPT_URL}}", remoteScriptUrl)
-  .replace(/^#!version\s*=.*$/m, `#!version = ${pkg.version}`);
+  .replace(/^#!version\\s*=.*$/m, `#!version = ${pkg.version}`);
 await writeFile(resolve(distDir, "DualSubs.AI.YouTube.remote.plugin"), remotePlugin);
-// This is the public subscription URL used by existing 0.2.x installations.
 await writeFile(resolve(distDir, "YouTube.AI.Translate.remote.plugin"), remotePlugin);
 
 await writeFile(

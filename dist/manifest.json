@@ -9,7 +9,7 @@
   },
   "localPlugin": "DualSubs.AI.YouTube.local.plugin",
   "remotePlugin": "DualSubs.AI.YouTube.remote.plugin",
-  "scriptUrl": "https://raw.githubusercontent.com/baitao24/loon-youtube-ai-translator/main/dist/dualsubs-ai.bundle.js",
+  "scriptUrl": "https://raw.githubusercontent.com/Wu2200/Youtube-Translate/main/dist/dualsubs-ai.bundle.js",
   "compatibility": {
     "bundle": "yt-ai.bundle.js",
     "localPlugin": "YouTube.AI.Translate.local.plugin",
