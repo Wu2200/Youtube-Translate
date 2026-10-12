@@ -30,7 +30,7 @@
     concurrency: 8,
     retries: 0,
     timeoutMs: 5200,
-    maxWaitMs: 6200,
+    maxWaitMs: 10000,
     originalFetchTimeoutMs: 1400,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -194,7 +194,7 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        7000
+        10000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
