@@ -26,7 +26,7 @@
   // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 6200;
+  const CLIENT_SAFE_MAX_WAIT_MS = 10000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -42,8 +42,7 @@
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
   const FOREGROUND_KEY = "@DualSubs-AI.LastSubtitleLoad.v1";
-  const executionDeadline =
-    Date.now() + (isBackgroundPing ? BACKGROUND_BUDGET_MS : Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS));
+  let executionDeadline = isBackgroundPing ? Date.now() + BACKGROUND_BUDGET_MS : 0;
   // 没翻完的视频的后台任务：全部原文 + 缓存键；只保留最近 2 个，3 小时后作废
   const JOB_KEY = "@DualSubs-AI.BackgroundJobs.v1";
   const LOCK_KEY = "@DualSubs-AI.BackgroundLock.v1";
@@ -720,6 +719,7 @@
       donePassthrough("source-only");
       return;
     }
+    executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
       sourceDocument = Core.resegmentDocument(sourceDocument);
