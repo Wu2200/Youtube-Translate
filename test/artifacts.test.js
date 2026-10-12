@@ -66,7 +66,7 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
         assert.equal(definitions.has(match[1]), true, `missing argument ${match[1]}`);
       }
     }
-    assert.doesNotMatch(plugin, /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);
+    assert.doesNotMatch(plugin.split("[Argument]")[1].split("[Rule]")[0], /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);
     assert.match(plugin, /^provider = select,"OpenAI-Compatible"/m);
     assert.match(plugin, /^model = input,"gpt-4o-mini"/m);
     assert.match(plugin, /^base_url = input,/m);

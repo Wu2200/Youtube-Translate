@@ -40,7 +40,7 @@
   // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 30 秒内不启动；
   // 后台进行中一旦有新的字幕加载，就不再发新批次
   const BACKGROUND_CONCURRENCY = 3;
-  const BACKGROUND_COOLDOWN_MS = 30000;
+  const BACKGROUND_COOLDOWN_MS = 3000;
   const FOREGROUND_KEY = "@DualSubs-AI.LastSubtitleLoad.v1";
   const executionDeadline =
     Date.now() + (isBackgroundPing ? BACKGROUND_BUDGET_MS : Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS));

@@ -42,13 +42,13 @@ await writeFile(resolve(distDir, "yt-ai.bundle.js"), bundle);
 
 const localPlugin = pluginTemplate
   .replaceAll("{{SCRIPT_URL}}", "dualsubs-ai.bundle.js")
-  .replace(/^#!version\\s*=.*$/m, `#!version = ${pkg.version}`);
+  .replace(/^#!version\s*=.*$/m, `#!version = ${pkg.version}`);
 await writeFile(resolve(distDir, "DualSubs.AI.YouTube.local.plugin"), localPlugin);
 await writeFile(resolve(distDir, "YouTube.AI.Translate.local.plugin"), localPlugin);
 
 const remotePlugin = pluginTemplate
   .replaceAll("{{SCRIPT_URL}}", remoteScriptUrl)
-  .replace(/^#!version\\s*=.*$/m, `#!version = ${pkg.version}`);
+  .replace(/^#!version\s*=.*$/m, `#!version = ${pkg.version}`);
 await writeFile(resolve(distDir, "DualSubs.AI.YouTube.remote.plugin"), remotePlugin);
 await writeFile(resolve(distDir, "YouTube.AI.Translate.remote.plugin"), remotePlugin);
 
