@@ -21,31 +21,33 @@ jobs:
         run: |
           node <<'NODE'
           const fs = require("node:fs");
-          const updates = [
-            {
-              path: "src/yt-ai-loon.js",
-              before: "const BACKGROUND_COOLDOWN_MS = 30000;",
-              after: "const BACKGROUND_COOLDOWN_MS = 3000;"
-            },
-            {
-              path: "scripts/build.mjs",
-              before: String.raw`.replace(/^#!version\\s*=.*$/m`,
-              after: String.raw`.replace(/^#!version\s*=.*$/m`
-            },
-            {
-              path: "test/artifacts.test.js",
-              before: `assert.doesNotMatch(plugin, /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);`,
-              after: `assert.doesNotMatch(plugin.split("[Argument]")[1].split("[Rule]")[0], /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);`
-            }
-          ];
-          for (const { path, before, after } of updates) {
-            const source = fs.readFileSync(path, "utf8");
-            if (source.split(before).length !== 2) throw new Error(`Expected exactly one match in ${path}`);
-            fs.writeFileSync(path, source.replace(before, after));
-          }
+          const sourcePath = "src/yt-ai-loon.js";
+          const source = fs.readFileSync(sourcePath, "utf8");
+          const before = "const BACKGROUND_COOLDOWN_MS = 30000;";
+          if (source.split(before).length !== 2) throw new Error(`Expected exactly one cooldown declaration in ${sourcePath}`);
+          fs.writeFileSync(sourcePath, source.replace(before, "const BACKGROUND_COOLDOWN_MS = 3000;"));
+
+          const buildPath = "scripts/build.mjs";
+          const buildLines = fs.readFileSync(buildPath, "utf8").split(/\r?\n/);
+          let buildReplacements = 0;
+          const correctedBuildLines = buildLines.map((line) => {
+            if (!line.includes(".replace(") || !line.includes("#!version")) return line;
+            buildReplacements += 1;
+            return line.replace(/\.replace\([^,]+,/, ".replace(/^#!version\\s*=.*$/m,");
+          });
+          if (buildReplacements !== 2) throw new Error(`Expected two plugin version replacements, found ${buildReplacements}`);
+          fs.writeFileSync(buildPath, correctedBuildLines.join("\n"));
+
+          const testPath = "test/artifacts.test.js";
+          const testLines = fs.readFileSync(testPath, "utf8").split(/\r?\n/);
+          const testIndexes = testLines.flatMap((line, index) => line.includes("assert.doesNotMatch(plugin, /Gemini|DeepSeek|Claude") ? [index] : []);
+          if (testIndexes.length !== 1) throw new Error(`Expected exactly one legacy provider assertion, found ${testIndexes.length}`);
+          testLines[testIndexes[0]] = "    assert.doesNotMatch(plugin.split(\"[Argument]\")[1].split(\"[Rule]\")[0], /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);";
+          fs.writeFileSync(testPath, testLines.join("\n"));
           NODE
       - run: npm run verify
-      - run: |
+      - name: Commit generated artifacts
+        run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
           git add src/yt-ai-loon.js scripts/build.mjs test/artifacts.test.js dist
