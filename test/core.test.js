@@ -46,7 +46,7 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.position, "SourceFirst");
   assert.equal(config.aiEnabled, true);
   assert.equal(config.concurrency, 12);
-  assert.equal(config.maxWaitMs, 6200);
+  assert.equal(config.maxWaitMs, 10000);
   assert.equal(config.originalFetchTimeoutMs, 1400);
 });
 
