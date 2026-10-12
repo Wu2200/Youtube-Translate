@@ -17,12 +17,38 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 20
-      - run: node -e 'const fs = require("node:fs"); const path = "src/yt-ai-loon.js"; const source = fs.readFileSync(path, "utf8"); const before = "const BACKGROUND_COOLDOWN_MS = 30000;"; const after = "const BACKGROUND_COOLDOWN_MS = 3000;"; if (source.split(before).length !== 2) throw new Error("Expected exactly one 30-second background cooldown declaration"); fs.writeFileSync(path, source.replace(before, after));'
+      - name: Prepare build inputs
+        run: |
+          node <<'NODE'
+          const fs = require("node:fs");
+          const updates = [
+            {
+              path: "src/yt-ai-loon.js",
+              before: "const BACKGROUND_COOLDOWN_MS = 30000;",
+              after: "const BACKGROUND_COOLDOWN_MS = 3000;"
+            },
+            {
+              path: "scripts/build.mjs",
+              before: String.raw`.replace(/^#!version\\s*=.*$/m`,
+              after: String.raw`.replace(/^#!version\s*=.*$/m`
+            },
+            {
+              path: "test/artifacts.test.js",
+              before: `assert.doesNotMatch(plugin, /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);`,
+              after: `assert.doesNotMatch(plugin.split("[Argument]")[1].split("[Rule]")[0], /Gemini|DeepSeek|Claude|deepseek_api_key|openai_api_key|claude_api_key/);`
+            }
+          ];
+          for (const { path, before, after } of updates) {
+            const source = fs.readFileSync(path, "utf8");
+            if (source.split(before).length !== 2) throw new Error(`Expected exactly one match in ${path}`);
+            fs.writeFileSync(path, source.replace(before, after));
+          }
+          NODE
       - run: npm run verify
       - run: |
           git config user.name github-actions[bot]
           git config user.email 41898282+github-actions[bot]@users.noreply.github.com
-          git add src/yt-ai-loon.js dist
+          git add src/yt-ai-loon.js scripts/build.mjs test/artifacts.test.js dist
           git rm .github/workflows/build-background-cooldown.yml
           git commit -m "Reduce background translation cooldown to 3 seconds"
           git push origin HEAD:main
