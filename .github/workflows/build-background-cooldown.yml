@@ -1,0 +1,28 @@
+name: Build background cooldown update
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/build-background-cooldown.yml
+permissions:
+  contents: write
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: node -e 'const fs = require("node:fs"); const path = "src/yt-ai-loon.js"; const source = fs.readFileSync(path, "utf8"); const before = "const BACKGROUND_COOLDOWN_MS = 30000;"; const after = "const BACKGROUND_COOLDOWN_MS = 3000;"; if (source.split(before).length !== 2) throw new Error("Expected exactly one 30-second background cooldown declaration"); fs.writeFileSync(path, source.replace(before, after));'
+      - run: npm run verify
+      - run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/yt-ai-loon.js dist
+          git rm .github/workflows/build-background-cooldown.yml
+          git commit -m "Reduce background translation cooldown to 3 seconds"
+          git push origin HEAD:main
