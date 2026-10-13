@@ -49,6 +49,8 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
   assert.doesNotMatch(remotePlugin, /\{\{SCRIPT_URL\}\}/);
 
   const expectedPatterns = [
+    "^https?:\\/\\/(www|m)\\.youtube\\.com\\/youtubei\\/v1\\/player(\\?.+)?$",
+    "^https?:\\/\\/(www|m)\\.youtube\\.com\\/youtubei\\/v1\\/player(\\?.+)?$",
     "^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$",
     "^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$",
     "^https?:\\/\\/s\\.youtube\\.com\\/api\\/stats\\/(watchtime|qoe|playback)(\\?.*)?$"
