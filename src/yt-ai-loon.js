@@ -34,6 +34,12 @@
       const isPlayerResponse = playerPath && typeof $response !== "undefined" && typeof $response?.body === "string";
       if (isPlayerResponse) {
         const playerResponse = JSON.parse($response.body);
+        const responseVideoId = playerResponse?.videoDetails?.videoId || videoId;
+        if (responseVideoId && previews[responseVideoId] > Date.now()) {
+          writePreviews(previews);
+          $done({ body: $response.body });
+          return true;
+        }
         const tracklist = playerResponse?.captions?.playerCaptionsTracklistRenderer;
         if (tracklist) {
           if (Array.isArray(tracklist.captionTracks)) {
