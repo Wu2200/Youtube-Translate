@@ -31,10 +31,8 @@ AND,((PROTOCOL,QUIC),(DOMAIN-SUFFIX,googlevideo.com)),REJECT
 AND,((PROTOCOL,QUIC),(DOMAIN,youtubei.googleapis.com)),REJECT
 
 [Script]
-http-request ^https?:\/\/(www|m)\.youtube\.com\/youtubei\/v1\/player(\?.+)?$ requires-body=1, script-path=dualsubs-ai.bundle.js, timeout=8, tag=AI 自动开启字幕请求, argument=[{ai_enabled},{provider},{model},{api_key},{base_url},{target_language},{secondary_language},{Position},{ShowOnly},{sentence_split},{background_translate},{custom_prompt},{LogLevel}]
-http-response ^https?:\/\/(www|m)\.youtube\.com\/youtubei\/v1\/player(\?.+)?$ requires-body=1, max-size=0, script-path=dualsubs-ai.bundle.js, timeout=8, tag=AI 自动开启字幕响应, argument=[{ai_enabled},{provider},{model},{api_key},{base_url},{target_language},{secondary_language},{Position},{ShowOnly},{sentence_split},{background_translate},{custom_prompt},{LogLevel}]
-# YouTube 播放器请求负责自动开启字幕，并识别悬停预览
-# AI 翻译：请求阶段去掉 tlang（YouTube 对它返回 429），响应阶段直接翻原文字幕
+# 只拦截字幕接口（/api/timedtext），不碰 player、get_watch 等播放信息接口，
+# 避免和 YouTube 去广告插件处理同一个请求导致去广告失效
 # AI 翻译：请求阶段去掉 tlang（YouTube 对它返回 429），响应阶段直接翻原文字幕
 http-request ^https?:\/\/(www|m)\.youtube\.com\/api\/timedtext(\?.+)?$ script-path=dualsubs-ai.bundle.js, timeout=8, tag=AI 字幕请求, argument=[{ai_enabled},{provider},{model},{api_key},{base_url},{target_language},{secondary_language},{Position},{ShowOnly},{sentence_split},{background_translate},{custom_prompt},{LogLevel}]
 # Loon 按改写前的地址匹配响应规则，所以这里匹配原始 timedtext 地址；脚本内部再检查 dsai 标记
