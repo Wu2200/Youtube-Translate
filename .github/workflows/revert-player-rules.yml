@@ -1,0 +1,33 @@
+name: Revert invalid player and auto-caption code
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/revert-player-rules.yml
+permissions:
+  contents: write
+jobs:
+  revert-and-build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - name: Revert files to 6f8978f
+        run: |
+          git checkout 6f8978f0ca058969e1bbd17dccf00c6cbd7074fc -- src/yt-ai-loon.js template/YouTube.AI.Translate.plugin test/artifacts.test.js
+      - name: Verify and build clean artifacts
+        run: npm run verify
+      - name: Commit clean artifacts
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add src/yt-ai-loon.js template/YouTube.AI.Translate.plugin test/artifacts.test.js dist
+          git rm .github/workflows/revert-player-rules.yml
+          git commit -m "Revert invalid player interception and auto caption changes"
+          git push origin HEAD:main
