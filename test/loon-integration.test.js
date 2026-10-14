@@ -177,6 +177,7 @@ test("Gemini translates the source JSON3 response directly into AI bilingual sub
     }
   });
   assert.equal(apiRequest.headers["x-goog-api-key"], "test-secret");
+  assert.equal(apiRequest.timeout, 15000, "model requests must receive at least a 15-second timeout");
   assert.equal(apiRequest.body.includes("test-secret"), false);
   assert.match(apiRequest.body, /zh-Hans/);
   const output = JSON.parse(result.doneValue.body);
