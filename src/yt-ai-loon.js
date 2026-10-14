@@ -27,6 +27,7 @@
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
   const CLIENT_SAFE_MAX_WAIT_MS = 20000;
+  const MIN_MODEL_REQUEST_TIMEOUT_MS = 15000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -178,7 +179,10 @@
         return;
       }
       let settled = false;
-      const timeoutMs = Math.min(request.timeout, Math.max(500, remainingTime() - 350));
+      const timeoutMs = Math.max(
+        MIN_MODEL_REQUEST_TIMEOUT_MS,
+        Number(request.timeout) || MIN_MODEL_REQUEST_TIMEOUT_MS
+      );
       const timer = setTimeout(() => {
         if (settled) return;
         settled = true;
@@ -210,10 +214,10 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    // 开字幕时要赶 App 约 7 秒的等待，单次请求最多 5.2 秒；后台续翻没人在等，慢模型可以等到 15 秒
+    // AI 单次请求至少给 15 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
     const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
     return Object.assign({}, config, {
-      timeoutMs: Math.min(cap, Math.max(500, remaining - 350))
+      timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
     });
   }
 
