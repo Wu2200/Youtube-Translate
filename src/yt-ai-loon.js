@@ -26,7 +26,7 @@
   // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 10000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
