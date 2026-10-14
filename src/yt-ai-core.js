@@ -30,8 +30,8 @@
     concurrency: 8,
     retries: 0,
     timeoutMs: 15000,
-    maxWaitMs: 15000,
-    originalFetchTimeoutMs: 1400,
+    maxWaitMs: 20000,
+    originalFetchTimeoutMs: 15000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
     cacheEntries: 6,
@@ -132,7 +132,7 @@
     const configuredTimeoutMs = clampInteger(
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
-      3000,
+      15000,
       60000
     );
     return {
@@ -194,13 +194,13 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        10000
+        20000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
         DEFAULTS.originalFetchTimeoutMs,
-        500,
-        2500
+        15000,
+        60000
       ),
       alignmentToleranceMs: clampInteger(
         raw.alignment_tolerance_ms ?? raw.alignmentToleranceMs,
