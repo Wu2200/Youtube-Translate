@@ -56,6 +56,9 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
   for (const plugin of [remotePlugin, localPlugin]) {
     const scriptLines = plugin.split(/\r?\n/).filter((line) => line.startsWith("http-"));
     assert.deepEqual(scriptLines.map((line) => line.split(" ")[1]), expectedPatterns);
+    assert.match(scriptLines[0], /timeout=15,/);
+    assert.match(scriptLines[1], /timeout=25,/);
+    assert.match(scriptLines[2], /timeout=30,/);
     const definitions = new Set(
       [...plugin.matchAll(/^([A-Za-z_]+)\s*=\s*(?:input|select|switch),/gm)].map(
         (match) => match[1]
