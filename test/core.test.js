@@ -46,8 +46,10 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.position, "SourceFirst");
   assert.equal(config.aiEnabled, true);
   assert.equal(config.concurrency, 12);
-  assert.equal(config.maxWaitMs, 10000);
-  assert.equal(config.originalFetchTimeoutMs, 1400);
+  assert.equal(config.timeoutMs, 15000);
+  assert.equal(config.maxWaitMs, 20000);
+  assert.equal(config.originalFetchTimeoutMs, 15000);
+  assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 15000);
 });
 
 test("rewrites timedtext to the source track and never keeps tlang", () => {
