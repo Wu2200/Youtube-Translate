@@ -25,6 +25,7 @@ test("generated bundle hash matches manifest and contains both runtimes", async 
   assert.equal(manifest.compatibility.bundle, "yt-ai.bundle.js");
   assert.match(bundle, /function createYouTubeAICore/);
   assert.match(bundle, /function runDualSubsAITranslator/);
+  assert.match(bundle, /const MIN_MODEL_REQUEST_TIMEOUT_MS = 15000;/);
   assert.doesNotMatch(bundle, /test-secret|openai-secret|gemini-secret/);
 });
 
