@@ -46,10 +46,10 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.position, "SourceFirst");
   assert.equal(config.aiEnabled, true);
   assert.equal(config.concurrency, 12);
-  assert.equal(config.timeoutMs, 15000);
-  assert.equal(config.maxWaitMs, 20000);
-  assert.equal(config.originalFetchTimeoutMs, 15000);
-  assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 15000);
+  assert.equal(config.timeoutMs, 20000);
+  assert.equal(config.maxWaitMs, 25000);
+  assert.equal(config.originalFetchTimeoutMs, 20000);
+  assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 20000);
 });
 
 test("rewrites timedtext to the source track and never keeps tlang", () => {
@@ -105,8 +105,7 @@ test("extracts timed JSON3 cues and chunks deterministically", () => {
   );
 });
 
-test("default batching uses small batches so the first wave returns within the subtitle deadline", () => {
-  // 真机：30 条一批约 2.5～3 秒，Loon 同时约 8 个请求在途；YouTube 等字幕约 7 秒。
+test("default batching uses balanced batches to minimize request count within deadline", () => {
   const cues = Array.from({ length: 962 }, (_, id) => ({
     id,
     eventIndex: id,
@@ -116,10 +115,10 @@ test("default batching uses small batches so the first wave returns within the s
   }));
   const config = Core.normalizeConfig({});
   const chunks = Core.chunkCues(cues, config.maxBatchItems, config.maxBatchChars);
-  assert.equal(config.maxBatchItems, 30);
+  assert.equal(config.maxBatchItems, 80);
   assert.equal(config.concurrency, 8);
-  assert.equal(chunks.length, 33);
-  assert.ok(chunks.every((chunk) => chunk.length <= 30));
+  assert.equal(chunks.length, 13);
+  assert.ok(chunks.every((chunk) => chunk.length <= 80));
   assert.deepEqual(chunks[0].map((cue) => cue.id).slice(0, 3), [0, 1, 2], "按时间顺序，开头先翻");
   assert.equal(chunks.flat().length, 962);
 });
@@ -346,15 +345,15 @@ test("provider and API key follow the selected model", () => {
 });
 
 test("batch size starts by model speed class and adapts unless fixed", () => {
-  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 30);
-  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 30);
-  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 30);
-  assert.equal(Core.initialBatchSize("deepseek-flash"), 30);
-  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 15);
-  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 15);
+  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 80);
+  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 80);
+  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 80);
+  assert.equal(Core.initialBatchSize("deepseek-flash"), 80);
+  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 60);
+  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 60);
   const adaptive = Core.normalizeConfig({ model: "gemini-3.8-flash" });
   assert.equal(adaptive.adaptiveBatch, true);
-  assert.equal(adaptive.maxBatchItems, 15);
+  assert.equal(adaptive.maxBatchItems, 60);
   const fixed = Core.normalizeConfig({ model: "gemini-3.8-flash", batch_size: "20" });
   assert.equal(fixed.adaptiveBatch, false);
   assert.equal(fixed.maxBatchItems, 20);

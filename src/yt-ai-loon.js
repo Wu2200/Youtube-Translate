@@ -10,24 +10,24 @@
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   // 每个视频单独存储，多留一些：连续打开六七个视频再回到第一个时，不用重新翻
   const ROWS_VIDEO_LIMIT = 20;
-  // 剩余时间不够一批正常耗时（真机 2～3 秒）就不再发新批次。
+  // 剩余时间不够一批正常耗时就不再发新批次。
   const MIN_LAUNCH_MS = 2000;
   const RENDER_RESERVE_MS = 150;
   // 记住每个 Gemini 模型能接受的思考设置，下次直接用
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   // 记住每个模型每行的平均耗时，用来自动决定每批条数
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  // 每批目标耗时：留出余量，保证一次开字幕内能跑完两轮
-  const TARGET_BATCH_MS = 3000;
-  const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 40;
+  // 每批目标耗时：调高目标耗时与批次上限，减少请求总数
+  const TARGET_BATCH_MS = 7000;
+  const MIN_BATCH_ROWS = 15;
+  const MAX_BATCH_ROWS = 80;
   // 每批附带前面几行原文作上下文，避免句子被批次切断后译得生硬
   const CONTEXT_ROWS = 2;
   // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 20000;
-  const MIN_MODEL_REQUEST_TIMEOUT_MS = 15000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 25000;
+  const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -36,9 +36,9 @@
   const isBackgroundPing =
     typeof $response === "undefined" &&
     /^https?:\/\/s\.youtube\.com\/api\/stats\//.test(String((typeof $request === "undefined" ? null : $request)?.url || ""));
-  const BACKGROUND_BUDGET_MS = 20000;
-  const BACKGROUND_REQUEST_TIMEOUT_MS = 15000;
-  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 30 秒内不启动；
+  const BACKGROUND_BUDGET_MS = 30000;
+  const BACKGROUND_REQUEST_TIMEOUT_MS = 20000;
+  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 3 秒内不启动；
   // 后台进行中一旦有新的字幕加载，就不再发新批次
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
@@ -214,7 +214,7 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    // AI 单次请求至少给 15 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
+    // AI 单次请求至少给 20 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
     const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
     return Object.assign({}, config, {
       timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
@@ -394,7 +394,7 @@
     }
   }
 
-  // 按这个模型记录下来的速度决定每批条数，目标是每批约 3 秒
+  // 按这个模型记录下来的速度决定每批条数
   function batchPlan() {
     if (!config.adaptiveBatch) return { size: config.maxBatchItems, expectedMs: 0 };
     const speed = readJsonStore(SPEED_KEY, {})[config.model];

@@ -23,15 +23,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 2026-10 真机实测：Loon 同一时间约 8 个请求在途，第 9 个开始排队；
-    // gemini-3.5-flash-lite 30 条一批约 2.5～3 秒。小批 + 8 并发让开头最快出结果。
-    maxBatchItems: 30,
-    maxBatchChars: 6000,
+    // 默认分批：轻量 80 条，通用模型 60 条，兼顾翻译速度与大幅减少请求次数
+    maxBatchItems: 60,
+    maxBatchChars: 12000,
     concurrency: 8,
     retries: 0,
-    timeoutMs: 15000,
-    maxWaitMs: 20000,
-    originalFetchTimeoutMs: 15000,
+    timeoutMs: 20000,
+    maxWaitMs: 25000,
+    originalFetchTimeoutMs: 20000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
     cacheEntries: 6,
@@ -93,9 +92,9 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 30 条，其他模型先保守用 15 条
+  // 没有实测速度前的初始批大小：轻量模型 80 条，其他模型推荐 60 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 30 : 15;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 80 : 60;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -132,7 +131,7 @@
     const configuredTimeoutMs = clampInteger(
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
-      15000,
+      20000,
       60000
     );
     return {
@@ -194,12 +193,12 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        20000
+        30000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
         DEFAULTS.originalFetchTimeoutMs,
-        15000,
+        20000,
         60000
       ),
       alignmentToleranceMs: clampInteger(

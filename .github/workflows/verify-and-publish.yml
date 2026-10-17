@@ -35,6 +35,6 @@ jobs:
           if git diff --cached --quiet; then
             echo "Generated release artifacts are already up to date."
           else
-            git commit -m "Build Loon artifacts with 15-second minimum timeouts"
+            git commit -m "Build Loon artifacts with 20-second timeout and balanced batches"
             git push origin HEAD:main
           fi
