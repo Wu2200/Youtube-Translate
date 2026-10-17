@@ -17,9 +17,9 @@
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   // 记住每个模型每行的平均耗时，用来自动决定每批条数
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  // 每批目标耗时：调高目标耗时与批次上限，减少请求总数
-  const TARGET_BATCH_MS = 7000;
-  const MIN_BATCH_ROWS = 15;
+  // 每批目标耗时：调高上限至 80 条，减少请求总数
+  const TARGET_BATCH_MS = 3000;
+  const MIN_BATCH_ROWS = 8;
   const MAX_BATCH_ROWS = 80;
   // 每批附带前面几行原文作上下文，避免句子被批次切断后译得生硬
   const CONTEXT_ROWS = 2;
@@ -326,7 +326,7 @@
     async function runWorker() {
       while (!finished) {
         if (options?.shouldStop?.()) return;
-        if (remainingTime() < launchThreshold) return;
+        if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
         const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
         if (index < 0) {
           // 队列暂时空了，但在途批次可能还会放回重试，等一下再看
@@ -353,7 +353,7 @@
           if (/timeout|deadline/i.test(String(error?.message || ""))) {
             samples.push({
               rows: batch.length,
-              ms: Math.max((Date.now() - startedAt) * 2, batch.length * 300)
+              ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
             });
           } else {
             // 限流稍等再发，其他错误立刻重发
@@ -376,7 +376,7 @@
     inFlight.forEach((startedAt, batch) => {
       samples.push({
         rows: batch.length,
-        ms: Math.max((Date.now() - startedAt) * 2, batch.length * 300)
+        ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
       });
     });
     return { rows: rows.slice(), failures, launched, retried, samples };
