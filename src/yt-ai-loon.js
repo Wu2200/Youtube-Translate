@@ -351,7 +351,10 @@
           inFlight.delete(batch);
           failures.push(error);
           if (/timeout|deadline/i.test(String(error?.message || ""))) {
-            samples.push({ rows: batch.length, ms: (Date.now() - startedAt) * 1.5 });
+            samples.push({
+              rows: batch.length,
+              ms: Math.max((Date.now() - startedAt) * 2, batch.length * 300)
+            });
           } else {
             // 限流稍等再发，其他错误立刻重发
             requeue(batch, batch, error?.status === 429 ? 600 : 0);
@@ -371,7 +374,10 @@
     clearTimeout(timer);
     finished = true;
     inFlight.forEach((startedAt, batch) => {
-      samples.push({ rows: batch.length, ms: (Date.now() - startedAt) * 1.5 });
+      samples.push({
+        rows: batch.length,
+        ms: Math.max((Date.now() - startedAt) * 2, batch.length * 300)
+      });
     });
     return { rows: rows.slice(), failures, launched, retried, samples };
   }
