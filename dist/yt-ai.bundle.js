@@ -27,13 +27,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 默认分批：轻量 80 条，通用模型 60 条，兼顾翻译速度与大幅减少请求次数
-    maxBatchItems: 60,
-    maxBatchChars: 12000,
-    concurrency: 8,
+    // 默认分批：轻量 120 条，通用模型 100 条，配合高并发大幅压缩长视频请求次数
+    maxBatchItems: 100,
+    maxBatchChars: 16000,
+    concurrency: 10,
     retries: 0,
     timeoutMs: 20000,
-    maxWaitMs: 25000,
+    // 前台安全时限严格锁定在 12 秒内，防止触发 YouTube App 客户端超时弹窗
+    maxWaitMs: 12000,
     originalFetchTimeoutMs: 20000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -96,9 +97,9 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 80 条，其他模型推荐 60 条
+  // 没有实测速度前的初始批大小：轻量模型 120 条，其他模型推荐 100 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 80 : 60;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 120 : 100;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -176,7 +177,7 @@
         configuredBatch,
         configuredBatch === undefined || configuredBatch === "" ? initialBatchSize(model) : DEFAULTS.maxBatchItems,
         5,
-        400
+        500
       ),
       maxBatchChars: clampInteger(
         raw.batch_chars ?? raw.max_batch_chars ?? raw.maxBatchChars,
@@ -184,7 +185,7 @@
         500,
         50000
       ),
-      concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 12),
+      concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 16),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
       timeoutMs:
         provider === "Gemini" && configuredTimeoutMs === 5000
@@ -1167,12 +1168,13 @@
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 3000;
-  const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 80;
+  const MIN_BATCH_ROWS = 10;
+  const MAX_BATCH_ROWS = 150;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 35000;
+  // 必须严格在 12 秒内截断交卷，绝对不能触碰 YouTube iOS 客户端约 15 秒的死线导致“加载字幕时出错”
+  const CLIENT_SAFE_MAX_WAIT_MS = 12000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
@@ -1840,6 +1842,7 @@
       donePassthrough("source-only");
       return;
     }
+    // 前台安全时限严格锁定在 12 秒内，防止触发 YouTube App 客户端超时弹窗
     executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
@@ -1849,6 +1852,7 @@
       }
     }
     const contentType = subtitleContentType(sourceDocument);
+    const videoId = videoIdOf($request.url);
 
     try {
       const languages = Core.responseLanguages($request.url, config, sourceDocument.cues);
@@ -1895,9 +1899,27 @@
       const aiRows = sourceDocument.cues
         .filter((cue) => known.has(String(cue.id)))
         .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
+      
+      // 关键防线：前台 12 秒即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
       if (!aiRows.length) {
-        throw outcome.failures[0] || new Error("AI produced no rows before the subtitle deadline");
+        if (config.backgroundTranslate) {
+          saveJob(videoId, {
+            key: rowsKey,
+            languages,
+            cues: sourceDocument.cues.map(({ id, text }) => ({ id, text })),
+            remaining: sourceDocument.cues.length,
+            createdAt: Date.now()
+          });
+        }
+        notifyFallback(
+          "视频字幕行数较多，AI 正在后台加速翻译中。本次先显示原文，看视频时后台自动续翻，完成后重新打开即可查看双语字幕。",
+          "AI 字幕后台翻译中",
+          { key: `queued:${videoId}`, intervalMs: 30000 }
+        );
+        donePassthrough("source-only", outcome.failures[0] || new Error("AI foreground timeout"));
+        return;
       }
+
       const complete = aiRows.length === sourceDocument.cues.length;
       const aiBody = Core.renderSubtitleDocument(sourceDocument, aiRows, config);
       const percent = Math.floor((aiRows.length / sourceDocument.cues.length) * 100);
@@ -1908,7 +1930,6 @@
           `${Date.now() - scriptStartedAt}ms` +
           (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
       );
-      const videoId = videoIdOf($request.url);
       if (complete) {
         writeCache(responseCacheKey, { body: aiBody, contentType, result: "ai" }, 86400000);
         removeJob(videoId);
