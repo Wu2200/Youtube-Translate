@@ -524,7 +524,7 @@ test("a model too slow for its batch size gets smaller batches next time", async
     runLoon({
       argument: { ...config(), model: "gemini-3.8-flash", parallel: "2", max_wait_ms: "3000", timeout_ms: "3000" },
       request: { url: processedUrl("json3", video), method: "GET", headers: {} },
-      response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(80) },
+      response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(120) },
       store,
       doneTimeoutMs: 4500,
       httpClient: {
@@ -538,13 +538,13 @@ test("a model too slow for its batch size gets smaller batches next time", async
       }
     });
   await slowRun("slow1", false);
-  assert.equal(sizes[0], 60, "没有测速数据时，非 lite 模型先用 60 条");
+  assert.equal(sizes[0], 100, "没有测速数据时，非 lite 模型先用 100 条");
   const speed = JSON.parse(store.get("@DualSubs-AI.ModelSpeed.v1"))["gemini-3.8-flash"];
   assert.ok(speed.msPerRow > 200, `超时批次应记成很慢，实际 ${speed.msPerRow}ms/行`);
 
   sizes.length = 0;
   const second = await slowRun("slow2", true);
-  assert.ok(sizes[0] < 60 && sizes[0] >= 8, `下次应缩小批次，实际 ${sizes[0]} 条`);
+  assert.ok(sizes[0] < 100 && sizes[0] >= 10, `下次应缩小批次，实际 ${sizes[0]} 条`);
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai", "这次接口立即返回，小批次也能全部翻完");
 });
 

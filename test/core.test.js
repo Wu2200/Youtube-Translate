@@ -45,9 +45,9 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.autoTranslate, false);
   assert.equal(config.position, "SourceFirst");
   assert.equal(config.aiEnabled, true);
-  assert.equal(config.concurrency, 12);
+  assert.equal(config.concurrency, 16);
   assert.equal(config.timeoutMs, 20000);
-  assert.equal(config.maxWaitMs, 25000);
+  assert.equal(config.maxWaitMs, 12000);
   assert.equal(config.originalFetchTimeoutMs, 20000);
   assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 20000);
 });
@@ -115,10 +115,10 @@ test("default batching uses balanced batches to minimize request count within de
   }));
   const config = Core.normalizeConfig({});
   const chunks = Core.chunkCues(cues, config.maxBatchItems, config.maxBatchChars);
-  assert.equal(config.maxBatchItems, 80);
-  assert.equal(config.concurrency, 8);
-  assert.equal(chunks.length, 13);
-  assert.ok(chunks.every((chunk) => chunk.length <= 80));
+  assert.equal(config.maxBatchItems, 120);
+  assert.equal(config.concurrency, 10);
+  assert.equal(chunks.length, 9);
+  assert.ok(chunks.every((chunk) => chunk.length <= 120));
   assert.deepEqual(chunks[0].map((cue) => cue.id).slice(0, 3), [0, 1, 2], "按时间顺序，开头先翻");
   assert.equal(chunks.flat().length, 962);
 });
@@ -373,15 +373,15 @@ test("provider and API key follow the selected model", () => {
 });
 
 test("batch size starts by model speed class and adapts unless fixed", () => {
-  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 80);
-  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 80);
-  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 80);
-  assert.equal(Core.initialBatchSize("deepseek-flash"), 80);
-  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 60);
-  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 60);
+  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 120);
+  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 120);
+  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 120);
+  assert.equal(Core.initialBatchSize("deepseek-flash"), 120);
+  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 100);
+  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 100);
   const adaptive = Core.normalizeConfig({ model: "gemini-3.8-flash" });
   assert.equal(adaptive.adaptiveBatch, true);
-  assert.equal(adaptive.maxBatchItems, 60);
+  assert.equal(adaptive.maxBatchItems, 100);
   const fixed = Core.normalizeConfig({ model: "gemini-3.8-flash", batch_size: "20" });
   assert.equal(fixed.adaptiveBatch, false);
   assert.equal(fixed.maxBatchItems, 20);

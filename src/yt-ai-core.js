@@ -23,13 +23,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 默认分批：轻量 80 条，通用模型 60 条，兼顾翻译速度与大幅减少请求次数
-    maxBatchItems: 60,
-    maxBatchChars: 12000,
-    concurrency: 8,
+    // 默认分批：轻量 120 条，通用模型 100 条，配合高并发大幅压缩长视频请求次数
+    maxBatchItems: 100,
+    maxBatchChars: 16000,
+    concurrency: 10,
     retries: 0,
     timeoutMs: 20000,
-    maxWaitMs: 25000,
+    // 前台安全时限严格锁定在 12 秒内，防止触发 YouTube App 客户端超时弹窗
+    maxWaitMs: 12000,
     originalFetchTimeoutMs: 20000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -92,9 +93,9 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 80 条，其他模型推荐 60 条
+  // 没有实测速度前的初始批大小：轻量模型 120 条，其他模型推荐 100 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 80 : 60;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 120 : 100;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -172,7 +173,7 @@
         configuredBatch,
         configuredBatch === undefined || configuredBatch === "" ? initialBatchSize(model) : DEFAULTS.maxBatchItems,
         5,
-        400
+        500
       ),
       maxBatchChars: clampInteger(
         raw.batch_chars ?? raw.max_batch_chars ?? raw.maxBatchChars,
@@ -180,7 +181,7 @@
         500,
         50000
       ),
-      concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 12),
+      concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 16),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
       timeoutMs:
         provider === "Gemini" && configuredTimeoutMs === 5000
