@@ -136,7 +136,7 @@
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
       20000,
-      60000
+      90000
     );
     return {
       provider,
@@ -186,9 +186,6 @@
       ),
       concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 12),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
-      // 5000 ms was the Gemini default through 0.2.4. On a real iPhone it
-      // cancelled a single otherwise valid response at ~5.5 s, so migrate that
-      // old default while keeping explicitly shorter/longer values untouched.
       timeoutMs:
         provider === "Gemini" && configuredTimeoutMs === 5000
           ? DEFAULTS.timeoutMs
@@ -197,7 +194,7 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        30000
+        60000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
@@ -266,7 +263,6 @@
     result.reason = "disabled";
     if (!config.aiEnabled || !isConfigured(config)) {
       result.reason = config.aiEnabled ? "missing-config" : "disabled";
-      // 没开 AI 或没配置时也去掉 tlang，至少让原文字幕能正常加载。
       if (url.searchParams.has("tlang")) {
         url.searchParams.delete("tlang");
         result.changed = true;
@@ -296,7 +292,6 @@
         result.reason = "same-language";
         return result;
       }
-      // 比如中文视频：原文已是中文，改翻成第二语言
       finalTarget = secondary;
       result.targetLanguage = secondary;
     }
@@ -319,7 +314,6 @@
     }
   }
 
-  // 按文字系统粗略识别字幕语言：只用于字幕地址里没有 lang 时，判断是否与目标语言相同
   function detectLanguage(cues) {
     const sample = (cues || []).slice(0, 200).map((cue) => cue.text).join(" ");
     const count = (pattern) => (sample.match(pattern) || []).length;
@@ -340,7 +334,6 @@
     const lang = url.searchParams.get("lang");
     const source = lang || detectLanguage(cues) || "auto";
     let target = url.searchParams.get(QUERY_TARGET) || config.targetLanguage;
-    // 地址里没写语言、但内容和目标语言相同时（如中文字幕要翻成中文），改用第二语言
     if (
       !lang &&
       source !== "auto" &&
@@ -494,7 +487,6 @@
       "Translate bracketed sound cues such as [Music] or [Applause] as short bracketed cues.",
       "Rows may be fragments of one spoken sentence split across rows; translate each row so consecutive rows read naturally in order.",
       "Be concise enough for on-screen subtitles. Each translation must be a single line with no line breaks.",
-      // 紧凑行格式：比逐行 JSON 少很多格式 token，同样时间能翻更多行
       "Input subtitles are lines in the form id|text.",
       context.length
         ? "Lines starting with -| are the rows just before this batch. Use them only to understand the first rows; never translate or return them."
@@ -543,12 +535,10 @@
       stream: false
     };
     if (config.plainRequest) {
-      // 重试：不带任何推理/思考参数
+      // 重试：不带任何推理/思考或自定义 temperature 参数
     } else if (config.provider === "OpenAI") {
-      // GPT-5.x 系列：关闭推理最快；这些模型不接受自定义 temperature
       body.reasoning_effort = "none";
     } else if (config.provider === "DeepSeek") {
-      // DeepSeek 默认开思考模式，字幕翻译要关掉，否则很慢
       body.thinking = { type: "disabled" };
     } else {
       body.temperature = 0;
@@ -582,9 +572,7 @@
       throw new Error("Gemini Base URL must use HTTPS");
     }
     const model = encodeURIComponent(config.model);
-    // 紧凑行格式是纯文本，不再用 JSON Schema 约束输出
     const generationConfig = { responseMimeType: "text/plain" };
-    // 部分模型（如 2.5 系列）不接受 thinkingLevel，运行时遇到 400 会换成 thinkingBudget: 0 或 low 重试
     if (config.thinkingLevel === "budget0") {
       generationConfig.thinkingConfig = { thinkingBudget: 0 };
     } else if (config.thinkingLevel !== "off") {
@@ -625,7 +613,6 @@
     };
   }
 
-  // Claude Messages API（原生 HTTP；Loon 里没有 SDK）
   function createClaudeRequest(config, batch, languages, useStructuredOutput) {
     const prompts = buildPrompts(
       batch,
@@ -642,7 +629,6 @@
     };
     const outputConfig = {};
     if (useStructuredOutput) outputConfig.format = { type: "json_schema", schema: claudeSchema() };
-    // Haiku 4.5 不接受 effort；其他模型用 low 降低延迟
     if (!/haiku/i.test(config.model) && config.claudeEffort !== false) outputConfig.effort = "low";
     if (Object.keys(outputConfig).length) body.output_config = outputConfig;
     return {
@@ -669,17 +655,50 @@
     return parseTranslationText(text);
   }
 
-  // 解析 "id|译文" 行格式；模型偶尔仍回 JSON 时按旧格式读
+  function stripThinking(value) {
+    return String(value || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
+      .trim();
+  }
+
+  function stripCodeFence(value) {
+    const trimmed = String(value || "").trim();
+    const match = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/i);
+    return match ? match[1].trim() : trimmed;
+  }
+
+  function parseJsonText(value) {
+    if (typeof value === "object" && value !== null) return value;
+    const raw = stripCodeFence(stripThinking(value));
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      const jsonMatch = raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+      if (jsonMatch) {
+        try {
+          return JSON.parse(jsonMatch[1]);
+        } catch (_) {}
+      }
+      throw new SyntaxError("Failed to parse AI response as JSON");
+    }
+  }
+
+  // 解析 "id|译文" 行格式；大幅放宽限制：支持各类型分隔符(:, ., -, ｜)及 Markdown 加粗编号
   function parseTranslationText(value) {
     if (typeof value === "object" && value !== null) return value;
-    const text = stripCodeFence(value);
+    const text = stripCodeFence(stripThinking(value));
     const rows = [];
     text.split(/\r?\n/).forEach((line) => {
-      const match = line.match(/^\s*(\d+)\s*[|｜]\s?(.*)$/);
+      // 容错匹配：0|译文, 0: 译文, 0. 译文, 0 - 译文, [0] 译文, **0**: 译文 等
+      const cleaned = line.replace(
+        /^\s*(?:\*\*|__)?(?:\[|\()?(\d+)(?:\]|\))?(?:\*\*|__)?\s*[:：|｜\-—.]\s*(.*)$/,
+        "$1|$2"
+      );
+      const match = cleaned.match(/^\s*(\d+)\s*\|\s?(.*)$/);
       if (match) {
-        rows.push({ id: Number(match[1]), text: match[2] });
+        rows.push({ id: Number(match[1]), text: match[2].trim() });
       } else if (rows.length && line.trim() && !/^\s*-[|｜]/.test(line)) {
-        // 模型偶尔把一条译文折成两行：接到上一条后面
         rows[rows.length - 1].text += ` ${line.trim()}`;
       }
     });
@@ -687,28 +706,23 @@
     return parseJsonText(text);
   }
 
-  function stripCodeFence(value) {
-    const trimmed = String(value || "").trim();
-    const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    return match ? match[1].trim() : trimmed;
-  }
-
-  function parseJsonText(value) {
-    if (typeof value === "object" && value !== null) return value;
-    return JSON.parse(stripCodeFence(value));
-  }
-
   function parseOpenAIResponse(responseBody) {
     const body = parseJsonText(responseBody);
-    const content = body?.choices?.[0]?.message?.content;
+    const choice = body?.choices?.[0];
+    const content = choice?.message?.content ?? choice?.text ?? choice?.delta?.content;
     if (Array.isArray(content)) {
       const text = content
         .map((part) => (typeof part === "string" ? part : part?.text || ""))
         .join("");
       return parseTranslationText(text);
     }
-    if (typeof content !== "string") throw new Error("OpenAI response has no message content");
-    return parseTranslationText(content);
+    if (typeof content === "string" && content.trim()) {
+      return parseTranslationText(content);
+    }
+    if (typeof choice?.message?.reasoning_content === "string" && choice.message.reasoning_content.trim()) {
+      return parseTranslationText(choice.message.reasoning_content);
+    }
+    throw new Error("OpenAI response has no message content");
   }
 
   function parseGeminiResponse(responseBody) {
@@ -722,7 +736,11 @@
       .filter((part) => part?.thought !== true)
       .map((part) => part?.text || "")
       .join("");
-    if (!text) throw new Error("Gemini response text is empty");
+    if (!text) {
+      const fallbackText = parts.map((part) => part?.text || "").join("");
+      if (fallbackText) return parseTranslationText(fallbackText);
+      throw new Error("Gemini response text is empty");
+    }
     return parseTranslationText(text);
   }
 
@@ -753,8 +771,7 @@
     });
   }
 
-  // 和 validateTranslations 不同：一批里个别行缺失、重复或异常时只丢掉这些行，
-  // 其余行照常使用，缺的行由官方译文补上。真机上约 1/20 的批次会少返回一行。
+  // 大幅放宽限制：按 ID 匹配优先；若第三方模型从 1..N 重新编号导致 ID 错位，按顺序对齐挽救
   function salvageTranslations(payload, batch) {
     const rows = Array.isArray(payload)
       ? payload
@@ -775,11 +792,20 @@
       if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
       result.push({ id: cue.id, text });
     });
+    // 如果直接 ID 匹配失败（模型自作主张重新编号），按行序号按序映射挽救
+    if (!result.length && rows.length > 0) {
+      batch.forEach((cue, index) => {
+        if (!rows[index]) return;
+        const text = cleanCueText(rows[index]?.text);
+        if (text && text.length <= Math.max(240, cue.text.length * 8)) {
+          result.push({ id: cue.id, text });
+        }
+      });
+    }
     if (!result.length) throw new Error("Translation batch has no usable rows");
     return result;
   }
 
-  // AI 译文优先，没有 AI 译文的行用官方译文。
   function mergeTranslationRows(officialRows, aiRows) {
     const merged = new Map();
     (officialRows || []).forEach((row) => merged.set(String(row.id), row));
@@ -787,8 +813,6 @@
     return Array.from(merged.values());
   }
 
-  // 原字幕常自带换行，译文较长时播放器也会折行，叠起来就成了"两行英文 + 两行中文"。
-  // 每种语言压成一行：英文换行处补空格，中日韩文字之间的换行直接去掉。
   function singleLine(text) {
     return String(text || "")
       .replace(/\s*\n\s*/g, " ")
@@ -869,11 +893,7 @@
     throw new Error("Unsupported YouTube subtitle format");
   }
 
-  // ---------- 按句重新分条 ----------
-  // 自动字幕按约 80 字符硬切，常把上一句结尾和下一句开头放在同一条里。
-  // 这里把字幕拆成词，按每条的时间段和字数估算每个词的时间，再按句末标点重新分条。
   const SENTENCE_MAX_CHARS = 90;
-  // 只把 "Yeah." "Okay." 这类很短的语气词并到下一句；"It was late." 这种完整短句保留
   const SENTENCE_MIN_CHARS = 10;
   const ABBREVIATIONS = new Set([
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g", "i.e", "u.s", "u.k", "inc", "ltd", "co", "no", "vol", "approx"
@@ -886,11 +906,9 @@
     if (/[.]$/.test(word.replace(/["'”’)\]]+$/, "")) && (ABBREVIATIONS.has(bare) || /^[a-z]$/i.test(bare))) {
       return false;
     }
-    // 下一词小写开头多半是句中（如 "approx. ten"），不断
     return !nextWord || !/^[a-z]/.test(nextWord);
   }
 
-  // 每条字幕实际"说话"的时间段：滚动字幕的下一条开始时，上一条基本说完了
   function speechWindows(cues) {
     return cues.map((cue, index) => {
       const next = cues[index + 1];
@@ -918,7 +936,6 @@
     return words;
   }
 
-  // 太长的句子优先在逗号后切，其次在连词前切，都没有就在当前位置切
   function splitPoint(words) {
     const total = words.reduce((sum, word) => sum + word.text.length + 1, 0);
     let chars = 0;
@@ -950,7 +967,6 @@
       }
     });
     if (current.length) groups.push(current);
-    // 很短的句子（如 "Yeah."）并到下一句，避免一闪而过
     const merged = [];
     groups.forEach((group) => {
       const previous = merged[merged.length - 1];
@@ -968,7 +984,6 @@
     return merged;
   }
 
-  // 只对带句末标点的字幕重新分条；人工字幕那种没有标点的短句保持原样
   function shouldResegment(cues) {
     if (cues.length < 2) return false;
     const enders = cues.reduce(
@@ -991,7 +1006,6 @@
     cues.forEach((cue, index) => {
       const next = cues[index + 1];
       let end = cue.lastWordEnd + 600;
-      // 和下一句之间停顿不长时，一直显示到下一句出现，避免字幕闪烁
       if (next && next.startMs - cue.lastWordEnd < 1200) end = next.startMs;
       if (next) end = Math.min(end, next.startMs);
       cue.durationMs = Math.max(end - cue.startMs, Math.min(800, next ? next.startMs - cue.startMs : 800));
@@ -1008,7 +1022,6 @@
     };
     if (document.format === "json3") {
       const value = JSON.parse(JSON.stringify(document.value));
-      // 保留窗口定义等非文字事件，文字事件全部换成新分好的句子
       const keep = (value.events || []).filter((event) => !Array.isArray(event?.segs));
       value.events = keep.concat(
         document.cues.map((cue) => ({
@@ -1023,7 +1036,6 @@
     const body = document.cues
       .map((cue) => `<p t="${cue.startMs}" d="${cue.durationMs}"><s>${escapeXml(textFor(cue))}</s></p>`)
       .join("\n");
-    // 去掉原来的段落和滚动窗口（<w>），新句子用默认窗口逐条显示
     if (/<body>[\s\S]*<\/body>/i.test(xml)) {
       return xml.replace(/<body>[\s\S]*<\/body>/i, `<body>\n${body}\n</body>`);
     }
@@ -1147,47 +1159,34 @@
   const Core = globalThis.YTAI;
   const CACHE_KEY = "@DualSubs-AI.Cache.v1";
   const NOTICE_KEY = "@DualSubs-AI.Notices.v2";
-  // 按视频保存已翻好的 AI 行；没翻完的视频下次请求字幕时只翻剩下的行。
-  // 每个视频单独一个存储键（避免所有视频挤在一条里撞到存储上限），索引记录最近的视频用于淘汰
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
-  // 每个视频单独存储，多留一些：连续打开六七个视频再回到第一个时，不用重新翻
   const ROWS_VIDEO_LIMIT = 20;
-  // 剩余时间不够一批正常耗时就不再发新批次。
   const MIN_LAUNCH_MS = 2000;
   const RENDER_RESERVE_MS = 150;
-  // 记住每个 Gemini 模型能接受的思考设置，下次直接用
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
-  // 记住每个模型每行的平均耗时，用来自动决定每批条数
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  // 每批目标耗时：调高上限至 80 条，减少请求总数
   const TARGET_BATCH_MS = 3000;
   const MIN_BATCH_ROWS = 8;
   const MAX_BATCH_ROWS = 80;
-  // 每批附带前面几行原文作上下文，避免句子被批次切断后译得生硬
   const CONTEXT_ROWS = 2;
-  // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 25000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 35000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
   const scriptStartedAt = Date.now();
-  // 播放时 App 定期发送的观看统计请求：没人在等它返回，可以借来在后台继续翻
   const isBackgroundPing =
     typeof $response === "undefined" &&
     /^https?:\/\/s\.youtube\.com\/api\/stats\//.test(String((typeof $request === "undefined" ? null : $request)?.url || ""));
-  const BACKGROUND_BUDGET_MS = 30000;
-  const BACKGROUND_REQUEST_TIMEOUT_MS = 20000;
-  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 3 秒内不启动；
-  // 后台进行中一旦有新的字幕加载，就不再发新批次
+  const BACKGROUND_BUDGET_MS = 40000;
+  const BACKGROUND_REQUEST_TIMEOUT_MS = 25000;
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
   const FOREGROUND_KEY = "@DualSubs-AI.LastSubtitleLoad.v1";
   let executionDeadline = isBackgroundPing ? Date.now() + BACKGROUND_BUDGET_MS : 0;
-  // 没翻完的视频的后台任务：全部原文 + 缓存键；只保留最近 2 个，3 小时后作废
   const JOB_KEY = "@DualSubs-AI.BackgroundJobs.v1";
   const LOCK_KEY = "@DualSubs-AI.BackgroundLock.v1";
   const JOB_LIMIT = 2;
@@ -1205,8 +1204,6 @@
       .slice(0, 220);
   }
 
-  // 不同类型的通知分开限频：部分翻译按视频只去重 30 秒（App 偶尔连发两次请求），
-  // 失败、缺 Key 这类重复性提示 5 分钟最多一次，避免刷屏
   function notifyFallback(message, subtitle, options) {
     if (typeof $notification === "undefined" || typeof $notification.post !== "function") {
       return;
@@ -1224,7 +1221,6 @@
     if (now - Number(history[key] || 0) < intervalMs) return;
     try {
       history[key] = now;
-      // 只保留最近 30 条记录
       const recent = Object.keys(history)
         .sort((a, b) => history[b] - history[a])
         .slice(0, 30);
@@ -1235,11 +1231,9 @@
         message
       );
     } catch (_) {
-      // Notifications are best-effort and must never block subtitles.
     }
   }
 
-  // 条件请求头：带上它们时 YouTube 可能回 304，App 就继续用它缓存的旧字幕
   const CONDITIONAL_REQUEST_HEADERS = /^(if-none-match|if-modified-since)$/i;
 
   function videoIdOf(url) {
@@ -1256,12 +1250,10 @@
         delete headers[key];
       }
       if (/^content-type$/i.test(key)) delete headers[key];
-      // 改写过的字幕不能再用 YouTube 原文的校验值，否则 App 会拿它做条件请求、复用旧结果
       if (rewritten && /^(etag|last-modified)$/i.test(key)) delete headers[key];
       if (noStore && /^(cache-control|expires|pragma|age)$/i.test(key)) delete headers[key];
     });
     if (noStore) {
-      // 只翻了一部分的字幕不让 App 缓存，下次加载这个视频时才会重新请求、接着翻
       headers["cache-control"] = "no-store, no-cache, max-age=0, must-revalidate";
       headers.pragma = "no-cache";
       headers.expires = "0";
@@ -1357,14 +1349,12 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    // AI 单次请求至少给 20 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
     const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
     return Object.assign({}, config, {
       timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
     });
   }
 
-  // 思考设置被拒时的退路：2.5 系列用 thinkingBudget 0；其他模型 minimal → low → 不传
   function nextThinkingLevel(model, level) {
     if (level === "off") return "";
     if (/gemini-2\.5/i.test(model)) return level === "budget0" ? "off" : "budget0";
@@ -1399,7 +1389,6 @@
       const raw = await httpPost(Core.createClaudeRequest(requestConfigWithinDeadline(), batch, languages, false));
       return Core.salvageTranslations(Core.parseClaudeResponse(raw), batch);
     } catch (error) {
-      // effort 等参数被拒时，去掉 effort 再试一次
       if (error?.status !== 400) throw error;
       log("DEBUG", "Claude request rejected; retrying without effort");
       const raw = await httpPost(
@@ -1414,7 +1403,6 @@
       const raw = await httpPost(Core.createOpenAIRequest(requestConfigWithinDeadline(), batch, languages, false));
       return Core.salvageTranslations(Core.parseOpenAIResponse(raw), batch);
     } catch (error) {
-      // 推理/思考参数被拒时（兼容服务常见），去掉这些参数再试一次
       if (![400, 404, 422].includes(error?.status)) throw error;
       log("DEBUG", "Request rejected; retrying without reasoning parameters");
       const raw = await httpPost(
@@ -1439,19 +1427,13 @@
     throw lastError || new Error("AI translation failed");
   }
 
-  // 在截止时间前尽量多翻：按时间顺序派发批次，到点就带着已完成的行返回，
-  // 不等仍在途的请求。单批失败不影响其他批次。
-  // 在截止时间前尽量多翻：按时间顺序派发批次，到点就带着已完成的行返回，
-  // 不等仍在途的请求。整批失败（限流、报错、返回坏 JSON）或少返回的行，
-  // 时间够的话重发一次，尽量在第一次开字幕时就翻完。
   async function translateWithinDeadline(batches, languages, expectedBatchMs, options) {
     const rows = [];
     const failures = [];
-    // 每批的耗时样本；超时或到点未完成的批次按 1.5 倍已用时间计，确保慢模型下次自动缩小批次
     const samples = [];
     const inFlight = new Map();
     const queue = batches.slice();
-    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.round((expectedBatchMs || 0) * 0.8));
+    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(6000, Math.round((expectedBatchMs || 0) * 0.5)));
     let launched = 0;
     let retried = 0;
     let finished = false;
@@ -1472,7 +1454,6 @@
         if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
         const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
         if (index < 0) {
-          // 队列暂时空了，但在途批次可能还会放回重试，等一下再看
           if (!queue.length && !inFlight.size) return;
           await delay(80);
           continue;
@@ -1498,8 +1479,10 @@
               rows: batch.length,
               ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
             });
+            if (remainingTime() >= 4000) {
+              requeue(batch, batch, 200);
+            }
           } else {
-            // 限流稍等再发，其他错误立刻重发
             requeue(batch, batch, error?.status === 429 ? 600 : 0);
           }
         }
@@ -1539,11 +1522,9 @@
     try {
       if (typeof $persistentStore !== "undefined") $persistentStore.write(JSON.stringify(value), key);
     } catch (_) {
-      // 只是优化，写不进去下次再试
     }
   }
 
-  // 按这个模型记录下来的速度决定每批条数
   function batchPlan() {
     if (!config.adaptiveBatch) return { size: config.maxBatchItems, expectedMs: 0 };
     const speed = readJsonStore(SPEED_KEY, {})[config.model];
@@ -1589,8 +1570,6 @@
     }
   }
 
-  // 写入前先读最新存储再合并：开字幕和后台续翻可能先后写同一个视频，合并才不会互相覆盖。
-  // 写完读回核对，返回实际存下的行；写入失败返回 null
   function writeRows(key, rows) {
     if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") return null;
     try {
@@ -1604,7 +1583,6 @@
         return null;
       }
       log("DEBUG", `Row cache saved (${stored.size} rows, ${payload.length} chars)`);
-      // 更新索引，只保留最近的几个视频，淘汰的清空
       const index = readJsonStore(ROWS_INDEX_KEY, []);
       const list = (Array.isArray(index) ? index : []).filter((item) => item !== key);
       list.unshift(key);
@@ -1612,7 +1590,6 @@
         try {
           $persistentStore.write("", ROWS_PREFIX + old);
         } catch (_) {
-          // 清理失败不影响本次结果
         }
       });
       writeJsonStore(ROWS_INDEX_KEY, list.slice(0, ROWS_VIDEO_LIMIT));
@@ -1714,7 +1691,6 @@
     const videoId = decodeURIComponent((url.match(/[?&]docid=([^&]+)/) || [])[1] || "");
     const jobs = readJsonStore(JOB_KEY, {});
     const job = jobs[videoId];
-    // 每次都记一条，方便确认 App 是否真的发了这类请求
     log("INFO", `Playback ping ${endpoint} for ${videoId || "?"}; background job: ${job ? `${job.remaining} rows left` : "none"}`);
     if (!job || !config.backgroundTranslate || !config.aiEnabled || !Core.isConfigured(config)) return;
     const lastLoad = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
@@ -1743,7 +1719,6 @@
         const startedAt = Date.now();
         const outcome = await translateWithinDeadline(batches, job.languages, plan.expectedMs, {
           concurrency: BACKGROUND_CONCURRENCY,
-          // 有新的字幕加载（打开或切换视频）就停止发新批次
           shouldStop: () => {
             const latest = Number($persistentStore.read(FOREGROUND_KEY) || 0);
             if (latest > startedAt) {
@@ -1764,7 +1739,6 @@
             (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
         );
       }
-      // 以真正存下来的为准判断是否翻完，避免写入失败时也通知「已完成」
       const stored = readRows(job.key);
       const left = job.cues.filter((cue) => !stored.has(String(cue.id))).length;
       log("INFO", `Background progress for ${videoId}: ${job.cues.length - left}/${job.cues.length} saved`);
@@ -1795,10 +1769,8 @@
   }
 
   async function handleRequest() {
-    // 字幕请求意味着正在打开或切换视频：记下时间，后台续翻据此让路
     markSubtitleLoad();
     const rewritten = Core.rewriteTimedTextRequest($request.url, config);
-    // 选了模型却没填那一家的 Key 时，字幕会只显示原文；提示一下，免得以为插件坏了
     if (rewritten.reason === "missing-config" && config.aiEnabled) {
       const provider = config.provider === "OpenAI-Compatible" ? "AI" : config.provider;
       notifyFallback(
@@ -1813,7 +1785,6 @@
         `Requesting source subtitles (${rewritten.sourceLanguage} -> ${rewritten.targetLanguage}, ${rewritten.reason})`
       );
     }
-    // 要翻译的字幕请求去掉条件请求头，保证每次都拿到完整原文、脚本都能处理
     let headers;
     if (Core.shouldProcessResponse(rewritten.url)) {
       const original = $request.headers || {};
@@ -1827,13 +1798,10 @@
     doneRequest(rewritten.url, headers);
   }
 
-  // 0.4.1 起直接翻原文字幕：YouTube 对带 tlang 的官方机翻请求返回 429，
-  // 不能再用它做底座。没翻到的行暂时只显示原文。
   function markSubtitleLoad() {
     try {
       if (typeof $persistentStore !== "undefined") $persistentStore.write(String(Date.now()), FOREGROUND_KEY);
     } catch (_) {
-      // 只用于给后台让路
     }
   }
 
@@ -1884,7 +1852,6 @@
 
     try {
       const languages = Core.responseLanguages($request.url, config, sourceDocument.cues);
-      // 识别后原文已经是目标语言（且没有可用的第二语言）时不翻译
       if (languages.source !== "auto" && Core.languageRoot(languages.source) === Core.languageRoot(languages.target)) {
         log("INFO", `Subtitles are already in ${languages.target}; nothing to translate`);
         donePassthrough("source-only");
@@ -1908,7 +1875,6 @@
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
-            // 用户已切到别的视频（有更新的字幕请求）时，这个视频不再发新批次，把名额让给新视频和去广告插件
             shouldStop: () => {
               const latest = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
               if (latest > scriptStartedAt) {
@@ -1923,7 +1889,6 @@
       outcome.rows.forEach((row) => known.set(String(row.id), row.text));
       if (outcome.rows.length) {
         const stored = writeRows(rowsKey, new Map(outcome.rows.map((row) => [String(row.id), row.text])));
-        // 合并后可能多出后台刚翻好的行，一起显示
         if (stored) stored.forEach((text, id) => known.set(id, text));
       }
 
@@ -1980,7 +1945,6 @@
     .catch((error) => {
       const message = safeError(error);
       log("ERROR", message);
-      // 后台续翻在 finally 里已经放行了统计请求，这里不能再调用一次 $done
       if (isBackgroundPing) return;
       if (typeof $response === "undefined") doneRequest($request.url);
       else donePassthrough("source-only", message);
