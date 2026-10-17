@@ -132,7 +132,7 @@
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
       20000,
-      60000
+      90000
     );
     return {
       provider,
@@ -182,9 +182,6 @@
       ),
       concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 12),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
-      // 5000 ms was the Gemini default through 0.2.4. On a real iPhone it
-      // cancelled a single otherwise valid response at ~5.5 s, so migrate that
-      // old default while keeping explicitly shorter/longer values untouched.
       timeoutMs:
         provider === "Gemini" && configuredTimeoutMs === 5000
           ? DEFAULTS.timeoutMs
@@ -193,7 +190,7 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        30000
+        60000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
@@ -262,7 +259,6 @@
     result.reason = "disabled";
     if (!config.aiEnabled || !isConfigured(config)) {
       result.reason = config.aiEnabled ? "missing-config" : "disabled";
-      // 没开 AI 或没配置时也去掉 tlang，至少让原文字幕能正常加载。
       if (url.searchParams.has("tlang")) {
         url.searchParams.delete("tlang");
         result.changed = true;
@@ -292,7 +288,6 @@
         result.reason = "same-language";
         return result;
       }
-      // 比如中文视频：原文已是中文，改翻成第二语言
       finalTarget = secondary;
       result.targetLanguage = secondary;
     }
@@ -315,7 +310,6 @@
     }
   }
 
-  // 按文字系统粗略识别字幕语言：只用于字幕地址里没有 lang 时，判断是否与目标语言相同
   function detectLanguage(cues) {
     const sample = (cues || []).slice(0, 200).map((cue) => cue.text).join(" ");
     const count = (pattern) => (sample.match(pattern) || []).length;
@@ -336,7 +330,6 @@
     const lang = url.searchParams.get("lang");
     const source = lang || detectLanguage(cues) || "auto";
     let target = url.searchParams.get(QUERY_TARGET) || config.targetLanguage;
-    // 地址里没写语言、但内容和目标语言相同时（如中文字幕要翻成中文），改用第二语言
     if (
       !lang &&
       source !== "auto" &&
@@ -490,7 +483,6 @@
       "Translate bracketed sound cues such as [Music] or [Applause] as short bracketed cues.",
       "Rows may be fragments of one spoken sentence split across rows; translate each row so consecutive rows read naturally in order.",
       "Be concise enough for on-screen subtitles. Each translation must be a single line with no line breaks.",
-      // 紧凑行格式：比逐行 JSON 少很多格式 token，同样时间能翻更多行
       "Input subtitles are lines in the form id|text.",
       context.length
         ? "Lines starting with -| are the rows just before this batch. Use them only to understand the first rows; never translate or return them."
@@ -539,12 +531,10 @@
       stream: false
     };
     if (config.plainRequest) {
-      // 重试：不带任何推理/思考参数
+      // 重试：不带任何推理/思考或自定义 temperature 参数
     } else if (config.provider === "OpenAI") {
-      // GPT-5.x 系列：关闭推理最快；这些模型不接受自定义 temperature
       body.reasoning_effort = "none";
     } else if (config.provider === "DeepSeek") {
-      // DeepSeek 默认开思考模式，字幕翻译要关掉，否则很慢
       body.thinking = { type: "disabled" };
     } else {
       body.temperature = 0;
@@ -578,9 +568,7 @@
       throw new Error("Gemini Base URL must use HTTPS");
     }
     const model = encodeURIComponent(config.model);
-    // 紧凑行格式是纯文本，不再用 JSON Schema 约束输出
     const generationConfig = { responseMimeType: "text/plain" };
-    // 部分模型（如 2.5 系列）不接受 thinkingLevel，运行时遇到 400 会换成 thinkingBudget: 0 或 low 重试
     if (config.thinkingLevel === "budget0") {
       generationConfig.thinkingConfig = { thinkingBudget: 0 };
     } else if (config.thinkingLevel !== "off") {
@@ -621,7 +609,6 @@
     };
   }
 
-  // Claude Messages API（原生 HTTP；Loon 里没有 SDK）
   function createClaudeRequest(config, batch, languages, useStructuredOutput) {
     const prompts = buildPrompts(
       batch,
@@ -638,7 +625,6 @@
     };
     const outputConfig = {};
     if (useStructuredOutput) outputConfig.format = { type: "json_schema", schema: claudeSchema() };
-    // Haiku 4.5 不接受 effort；其他模型用 low 降低延迟
     if (!/haiku/i.test(config.model) && config.claudeEffort !== false) outputConfig.effort = "low";
     if (Object.keys(outputConfig).length) body.output_config = outputConfig;
     return {
@@ -665,17 +651,50 @@
     return parseTranslationText(text);
   }
 
-  // 解析 "id|译文" 行格式；模型偶尔仍回 JSON 时按旧格式读
+  function stripThinking(value) {
+    return String(value || "")
+      .replace(/<think>[\s\S]*?<\/think>/gi, "")
+      .replace(/<thought>[\s\S]*?<\/thought>/gi, "")
+      .trim();
+  }
+
+  function stripCodeFence(value) {
+    const trimmed = String(value || "").trim();
+    const match = trimmed.match(/^```[a-zA-Z0-9_-]*\s*([\s\S]*?)\s*```$/i);
+    return match ? match[1].trim() : trimmed;
+  }
+
+  function parseJsonText(value) {
+    if (typeof value === "object" && value !== null) return value;
+    const raw = stripCodeFence(stripThinking(value));
+    try {
+      return JSON.parse(raw);
+    } catch (_) {
+      const jsonMatch = raw.match(/(\{[\s\S]*\}|\[[\s\S]*\])/);
+      if (jsonMatch) {
+        try {
+          return JSON.parse(jsonMatch[1]);
+        } catch (_) {}
+      }
+      throw new SyntaxError("Failed to parse AI response as JSON");
+    }
+  }
+
+  // 解析 "id|译文" 行格式；大幅放宽限制：支持各类型分隔符(:, ., -, ｜)及 Markdown 加粗编号
   function parseTranslationText(value) {
     if (typeof value === "object" && value !== null) return value;
-    const text = stripCodeFence(value);
+    const text = stripCodeFence(stripThinking(value));
     const rows = [];
     text.split(/\r?\n/).forEach((line) => {
-      const match = line.match(/^\s*(\d+)\s*[|｜]\s?(.*)$/);
+      // 容错匹配：0|译文, 0: 译文, 0. 译文, 0 - 译文, [0] 译文, **0**: 译文 等
+      const cleaned = line.replace(
+        /^\s*(?:\*\*|__)?(?:\[|\()?(\d+)(?:\]|\))?(?:\*\*|__)?\s*[:：|｜\-—.]\s*(.*)$/,
+        "$1|$2"
+      );
+      const match = cleaned.match(/^\s*(\d+)\s*\|\s?(.*)$/);
       if (match) {
-        rows.push({ id: Number(match[1]), text: match[2] });
+        rows.push({ id: Number(match[1]), text: match[2].trim() });
       } else if (rows.length && line.trim() && !/^\s*-[|｜]/.test(line)) {
-        // 模型偶尔把一条译文折成两行：接到上一条后面
         rows[rows.length - 1].text += ` ${line.trim()}`;
       }
     });
@@ -683,28 +702,23 @@
     return parseJsonText(text);
   }
 
-  function stripCodeFence(value) {
-    const trimmed = String(value || "").trim();
-    const match = trimmed.match(/^```(?:json)?\s*([\s\S]*?)\s*```$/i);
-    return match ? match[1].trim() : trimmed;
-  }
-
-  function parseJsonText(value) {
-    if (typeof value === "object" && value !== null) return value;
-    return JSON.parse(stripCodeFence(value));
-  }
-
   function parseOpenAIResponse(responseBody) {
     const body = parseJsonText(responseBody);
-    const content = body?.choices?.[0]?.message?.content;
+    const choice = body?.choices?.[0];
+    const content = choice?.message?.content ?? choice?.text ?? choice?.delta?.content;
     if (Array.isArray(content)) {
       const text = content
         .map((part) => (typeof part === "string" ? part : part?.text || ""))
         .join("");
       return parseTranslationText(text);
     }
-    if (typeof content !== "string") throw new Error("OpenAI response has no message content");
-    return parseTranslationText(content);
+    if (typeof content === "string" && content.trim()) {
+      return parseTranslationText(content);
+    }
+    if (typeof choice?.message?.reasoning_content === "string" && choice.message.reasoning_content.trim()) {
+      return parseTranslationText(choice.message.reasoning_content);
+    }
+    throw new Error("OpenAI response has no message content");
   }
 
   function parseGeminiResponse(responseBody) {
@@ -718,7 +732,11 @@
       .filter((part) => part?.thought !== true)
       .map((part) => part?.text || "")
       .join("");
-    if (!text) throw new Error("Gemini response text is empty");
+    if (!text) {
+      const fallbackText = parts.map((part) => part?.text || "").join("");
+      if (fallbackText) return parseTranslationText(fallbackText);
+      throw new Error("Gemini response text is empty");
+    }
     return parseTranslationText(text);
   }
 
@@ -749,8 +767,7 @@
     });
   }
 
-  // 和 validateTranslations 不同：一批里个别行缺失、重复或异常时只丢掉这些行，
-  // 其余行照常使用，缺的行由官方译文补上。真机上约 1/20 的批次会少返回一行。
+  // 大幅放宽限制：按 ID 匹配优先；若第三方模型从 1..N 重新编号导致 ID 错位，按顺序对齐挽救
   function salvageTranslations(payload, batch) {
     const rows = Array.isArray(payload)
       ? payload
@@ -771,11 +788,20 @@
       if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
       result.push({ id: cue.id, text });
     });
+    // 如果直接 ID 匹配失败（模型自作主张重新编号），按行序号按序映射挽救
+    if (!result.length && rows.length > 0) {
+      batch.forEach((cue, index) => {
+        if (!rows[index]) return;
+        const text = cleanCueText(rows[index]?.text);
+        if (text && text.length <= Math.max(240, cue.text.length * 8)) {
+          result.push({ id: cue.id, text });
+        }
+      });
+    }
     if (!result.length) throw new Error("Translation batch has no usable rows");
     return result;
   }
 
-  // AI 译文优先，没有 AI 译文的行用官方译文。
   function mergeTranslationRows(officialRows, aiRows) {
     const merged = new Map();
     (officialRows || []).forEach((row) => merged.set(String(row.id), row));
@@ -783,8 +809,6 @@
     return Array.from(merged.values());
   }
 
-  // 原字幕常自带换行，译文较长时播放器也会折行，叠起来就成了"两行英文 + 两行中文"。
-  // 每种语言压成一行：英文换行处补空格，中日韩文字之间的换行直接去掉。
   function singleLine(text) {
     return String(text || "")
       .replace(/\s*\n\s*/g, " ")
@@ -865,11 +889,7 @@
     throw new Error("Unsupported YouTube subtitle format");
   }
 
-  // ---------- 按句重新分条 ----------
-  // 自动字幕按约 80 字符硬切，常把上一句结尾和下一句开头放在同一条里。
-  // 这里把字幕拆成词，按每条的时间段和字数估算每个词的时间，再按句末标点重新分条。
   const SENTENCE_MAX_CHARS = 90;
-  // 只把 "Yeah." "Okay." 这类很短的语气词并到下一句；"It was late." 这种完整短句保留
   const SENTENCE_MIN_CHARS = 10;
   const ABBREVIATIONS = new Set([
     "mr", "mrs", "ms", "dr", "prof", "sr", "jr", "st", "vs", "etc", "e.g", "i.e", "u.s", "u.k", "inc", "ltd", "co", "no", "vol", "approx"
@@ -882,11 +902,9 @@
     if (/[.]$/.test(word.replace(/["'”’)\]]+$/, "")) && (ABBREVIATIONS.has(bare) || /^[a-z]$/i.test(bare))) {
       return false;
     }
-    // 下一词小写开头多半是句中（如 "approx. ten"），不断
     return !nextWord || !/^[a-z]/.test(nextWord);
   }
 
-  // 每条字幕实际"说话"的时间段：滚动字幕的下一条开始时，上一条基本说完了
   function speechWindows(cues) {
     return cues.map((cue, index) => {
       const next = cues[index + 1];
@@ -914,7 +932,6 @@
     return words;
   }
 
-  // 太长的句子优先在逗号后切，其次在连词前切，都没有就在当前位置切
   function splitPoint(words) {
     const total = words.reduce((sum, word) => sum + word.text.length + 1, 0);
     let chars = 0;
@@ -946,7 +963,6 @@
       }
     });
     if (current.length) groups.push(current);
-    // 很短的句子（如 "Yeah."）并到下一句，避免一闪而过
     const merged = [];
     groups.forEach((group) => {
       const previous = merged[merged.length - 1];
@@ -964,7 +980,6 @@
     return merged;
   }
 
-  // 只对带句末标点的字幕重新分条；人工字幕那种没有标点的短句保持原样
   function shouldResegment(cues) {
     if (cues.length < 2) return false;
     const enders = cues.reduce(
@@ -987,7 +1002,6 @@
     cues.forEach((cue, index) => {
       const next = cues[index + 1];
       let end = cue.lastWordEnd + 600;
-      // 和下一句之间停顿不长时，一直显示到下一句出现，避免字幕闪烁
       if (next && next.startMs - cue.lastWordEnd < 1200) end = next.startMs;
       if (next) end = Math.min(end, next.startMs);
       cue.durationMs = Math.max(end - cue.startMs, Math.min(800, next ? next.startMs - cue.startMs : 800));
@@ -1004,7 +1018,6 @@
     };
     if (document.format === "json3") {
       const value = JSON.parse(JSON.stringify(document.value));
-      // 保留窗口定义等非文字事件，文字事件全部换成新分好的句子
       const keep = (value.events || []).filter((event) => !Array.isArray(event?.segs));
       value.events = keep.concat(
         document.cues.map((cue) => ({
@@ -1019,7 +1032,6 @@
     const body = document.cues
       .map((cue) => `<p t="${cue.startMs}" d="${cue.durationMs}"><s>${escapeXml(textFor(cue))}</s></p>`)
       .join("\n");
-    // 去掉原来的段落和滚动窗口（<w>），新句子用默认窗口逐条显示
     if (/<body>[\s\S]*<\/body>/i.test(xml)) {
       return xml.replace(/<body>[\s\S]*<\/body>/i, `<body>\n${body}\n</body>`);
     }

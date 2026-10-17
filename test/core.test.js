@@ -138,6 +138,35 @@ test("salvages usable rows from a batch that drops or duplicates a line", () => 
   assert.deepEqual(merged.map((row) => row.text), ["零", "官1", "官2", "三"]);
 });
 
+test("parses flexible separators, markdown, and thinking tags with sequential fallback", () => {
+  const withSeparators = Core.parseTranslationText(
+    "<think>thought content 1|ignore</think>\n" +
+    "**1**: 第一行\n" +
+    "2. 第二行\n" +
+    "3 - 第三行\n" +
+    "[4]：第四行\n" +
+    "5 — 第五行"
+  );
+  assert.deepEqual(withSeparators.translations, [
+    { id: 1, text: "第一行" },
+    { id: 2, text: "第二行" },
+    { id: 3, text: "第三行" },
+    { id: 4, text: "第四行" },
+    { id: 5, text: "第五行" }
+  ]);
+
+  const batch = [{ id: 100, text: "A" }, { id: 101, text: "B" }, { id: 102, text: "C" }];
+  const salvaged = Core.salvageTranslations(
+    { translations: [{ id: 1, text: "甲" }, { id: 2, text: "乙" }, { id: 3, text: "丙" }] },
+    batch
+  );
+  assert.deepEqual(salvaged, [
+    { id: 100, text: "甲" },
+    { id: 101, text: "乙" },
+    { id: 102, text: "丙" }
+  ]);
+});
+
 test("builds OpenAI-compatible request with JSON mode and header-only key", () => {
   const config = Core.normalizeConfig({
     provider: "OpenAI-Compatible",
@@ -338,7 +367,6 @@ test("provider and API key follow the selected model", () => {
   }
   assert.equal(Core.normalizeConfig({ model: "deepseek-flash" }).baseUrl, "https://api.deepseek.com");
   assert.equal(Core.normalizeConfig({ model: "gpt-5.4-nano" }).baseUrl, "https://api.openai.com/v1");
-  // 只填了 Gemini Key 却选了 DeepSeek：视为未配置，不会把 Gemini Key 发给别家
   const mismatched = Core.normalizeConfig({ api_key: "g", model: "deepseek-flash" });
   assert.equal(mismatched.apiKey, "");
   assert.equal(Core.isConfigured(mismatched), false);
@@ -432,7 +460,6 @@ test("built-in prompt covers subtitle style without needing a custom prompt", ()
   assert.match(Core.buildPrompts([{ id: 0, text: "x" }], "en", "zh-Hans", "人名保留英文").system, /Additional user preference: 人名保留英文/);
 });
 
-// 模拟自动字幕：按约 80 字符硬切，句子跨条，滚动显示（下一条开始时上一条还没消失）
 function rollingAsrSrv3() {
   const lines = [
     "We started the trip early in the morning. The road was\nempty and quiet",
@@ -458,7 +485,6 @@ test("auto captions are regrouped into whole sentences with non-overlapping timi
     "Then we saw the lake.",
     "It was bigger than we expected, and the water was very clear.",
     "Mr. Lee said it was the best view of the year.",
-    // "Yeah." 太短，并到下一句；整句超过 90 字符，在逗号后切开
     "Yeah. After lunch we walked around the lake for about 2.5 hours,",
     "and by the end everyone was tired but happy.",
     "[music] We drove home before sunset."
@@ -471,7 +497,6 @@ test("auto captions are regrouped into whole sentences with non-overlapping timi
       assert.ok(cue.startMs + cue.durationMs <= next.startMs, "不和下一句重叠");
     }
   });
-  // 所有词按原顺序保留，一个不少
   const words = (list) => list.map((text) => text.replace(/\n/g, " ")).join(" ").split(/\s+/);
   assert.deepEqual(words(texts), words(document.cues.map((cue) => cue.text)));
 });
@@ -570,7 +595,6 @@ test("videos already in the target language are translated into the secondary la
   const toJa = Core.rewriteTimedTextRequest("https://www.youtube.com/api/timedtext?v=a&lang=zh-Hans", japaneseSecondary);
   assert.equal(new URL(toJa.url).searchParams.get("dsai_target"), "ja");
 
-  // 第二语言也和视频语言相同：不翻译
   const same = Core.normalizeConfig({ api_key: "k", model: "m", target_language: "简体中文", secondary_language: "繁體中文" });
   const skipped = Core.rewriteTimedTextRequest("https://www.youtube.com/api/timedtext?v=a&lang=zh-Hans", same);
   assert.equal(skipped.reason, "same-language");

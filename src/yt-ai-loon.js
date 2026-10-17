@@ -4,47 +4,34 @@
   const Core = globalThis.YTAI;
   const CACHE_KEY = "@DualSubs-AI.Cache.v1";
   const NOTICE_KEY = "@DualSubs-AI.Notices.v2";
-  // 按视频保存已翻好的 AI 行；没翻完的视频下次请求字幕时只翻剩下的行。
-  // 每个视频单独一个存储键（避免所有视频挤在一条里撞到存储上限），索引记录最近的视频用于淘汰
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
-  // 每个视频单独存储，多留一些：连续打开六七个视频再回到第一个时，不用重新翻
   const ROWS_VIDEO_LIMIT = 20;
-  // 剩余时间不够一批正常耗时就不再发新批次。
   const MIN_LAUNCH_MS = 2000;
   const RENDER_RESERVE_MS = 150;
-  // 记住每个 Gemini 模型能接受的思考设置，下次直接用
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
-  // 记住每个模型每行的平均耗时，用来自动决定每批条数
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  // 每批目标耗时：调高上限至 80 条，减少请求总数
   const TARGET_BATCH_MS = 3000;
   const MIN_BATCH_ROWS = 8;
   const MAX_BATCH_ROWS = 80;
-  // 每批附带前面几行原文作上下文，避免句子被批次切断后译得生硬
   const CONTEXT_ROWS = 2;
-  // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 25000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 35000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
   const scriptStartedAt = Date.now();
-  // 播放时 App 定期发送的观看统计请求：没人在等它返回，可以借来在后台继续翻
   const isBackgroundPing =
     typeof $response === "undefined" &&
     /^https?:\/\/s\.youtube\.com\/api\/stats\//.test(String((typeof $request === "undefined" ? null : $request)?.url || ""));
-  const BACKGROUND_BUDGET_MS = 30000;
-  const BACKGROUND_REQUEST_TIMEOUT_MS = 20000;
-  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 3 秒内不启动；
-  // 后台进行中一旦有新的字幕加载，就不再发新批次
+  const BACKGROUND_BUDGET_MS = 40000;
+  const BACKGROUND_REQUEST_TIMEOUT_MS = 25000;
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
   const FOREGROUND_KEY = "@DualSubs-AI.LastSubtitleLoad.v1";
   let executionDeadline = isBackgroundPing ? Date.now() + BACKGROUND_BUDGET_MS : 0;
-  // 没翻完的视频的后台任务：全部原文 + 缓存键；只保留最近 2 个，3 小时后作废
   const JOB_KEY = "@DualSubs-AI.BackgroundJobs.v1";
   const LOCK_KEY = "@DualSubs-AI.BackgroundLock.v1";
   const JOB_LIMIT = 2;
@@ -62,8 +49,6 @@
       .slice(0, 220);
   }
 
-  // 不同类型的通知分开限频：部分翻译按视频只去重 30 秒（App 偶尔连发两次请求），
-  // 失败、缺 Key 这类重复性提示 5 分钟最多一次，避免刷屏
   function notifyFallback(message, subtitle, options) {
     if (typeof $notification === "undefined" || typeof $notification.post !== "function") {
       return;
@@ -81,7 +66,6 @@
     if (now - Number(history[key] || 0) < intervalMs) return;
     try {
       history[key] = now;
-      // 只保留最近 30 条记录
       const recent = Object.keys(history)
         .sort((a, b) => history[b] - history[a])
         .slice(0, 30);
@@ -92,11 +76,9 @@
         message
       );
     } catch (_) {
-      // Notifications are best-effort and must never block subtitles.
     }
   }
 
-  // 条件请求头：带上它们时 YouTube 可能回 304，App 就继续用它缓存的旧字幕
   const CONDITIONAL_REQUEST_HEADERS = /^(if-none-match|if-modified-since)$/i;
 
   function videoIdOf(url) {
@@ -113,12 +95,10 @@
         delete headers[key];
       }
       if (/^content-type$/i.test(key)) delete headers[key];
-      // 改写过的字幕不能再用 YouTube 原文的校验值，否则 App 会拿它做条件请求、复用旧结果
       if (rewritten && /^(etag|last-modified)$/i.test(key)) delete headers[key];
       if (noStore && /^(cache-control|expires|pragma|age)$/i.test(key)) delete headers[key];
     });
     if (noStore) {
-      // 只翻了一部分的字幕不让 App 缓存，下次加载这个视频时才会重新请求、接着翻
       headers["cache-control"] = "no-store, no-cache, max-age=0, must-revalidate";
       headers.pragma = "no-cache";
       headers.expires = "0";
@@ -214,14 +194,12 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    // AI 单次请求至少给 20 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
     const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
     return Object.assign({}, config, {
       timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
     });
   }
 
-  // 思考设置被拒时的退路：2.5 系列用 thinkingBudget 0；其他模型 minimal → low → 不传
   function nextThinkingLevel(model, level) {
     if (level === "off") return "";
     if (/gemini-2\.5/i.test(model)) return level === "budget0" ? "off" : "budget0";
@@ -256,7 +234,6 @@
       const raw = await httpPost(Core.createClaudeRequest(requestConfigWithinDeadline(), batch, languages, false));
       return Core.salvageTranslations(Core.parseClaudeResponse(raw), batch);
     } catch (error) {
-      // effort 等参数被拒时，去掉 effort 再试一次
       if (error?.status !== 400) throw error;
       log("DEBUG", "Claude request rejected; retrying without effort");
       const raw = await httpPost(
@@ -271,7 +248,6 @@
       const raw = await httpPost(Core.createOpenAIRequest(requestConfigWithinDeadline(), batch, languages, false));
       return Core.salvageTranslations(Core.parseOpenAIResponse(raw), batch);
     } catch (error) {
-      // 推理/思考参数被拒时（兼容服务常见），去掉这些参数再试一次
       if (![400, 404, 422].includes(error?.status)) throw error;
       log("DEBUG", "Request rejected; retrying without reasoning parameters");
       const raw = await httpPost(
@@ -296,19 +272,13 @@
     throw lastError || new Error("AI translation failed");
   }
 
-  // 在截止时间前尽量多翻：按时间顺序派发批次，到点就带着已完成的行返回，
-  // 不等仍在途的请求。单批失败不影响其他批次。
-  // 在截止时间前尽量多翻：按时间顺序派发批次，到点就带着已完成的行返回，
-  // 不等仍在途的请求。整批失败（限流、报错、返回坏 JSON）或少返回的行，
-  // 时间够的话重发一次，尽量在第一次开字幕时就翻完。
   async function translateWithinDeadline(batches, languages, expectedBatchMs, options) {
     const rows = [];
     const failures = [];
-    // 每批的耗时样本；超时或到点未完成的批次按 1.5 倍已用时间计，确保慢模型下次自动缩小批次
     const samples = [];
     const inFlight = new Map();
     const queue = batches.slice();
-    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.round((expectedBatchMs || 0) * 0.8));
+    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(6000, Math.round((expectedBatchMs || 0) * 0.5)));
     let launched = 0;
     let retried = 0;
     let finished = false;
@@ -329,7 +299,6 @@
         if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
         const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
         if (index < 0) {
-          // 队列暂时空了，但在途批次可能还会放回重试，等一下再看
           if (!queue.length && !inFlight.size) return;
           await delay(80);
           continue;
@@ -355,8 +324,10 @@
               rows: batch.length,
               ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
             });
+            if (remainingTime() >= 4000) {
+              requeue(batch, batch, 200);
+            }
           } else {
-            // 限流稍等再发，其他错误立刻重发
             requeue(batch, batch, error?.status === 429 ? 600 : 0);
           }
         }
@@ -396,11 +367,9 @@
     try {
       if (typeof $persistentStore !== "undefined") $persistentStore.write(JSON.stringify(value), key);
     } catch (_) {
-      // 只是优化，写不进去下次再试
     }
   }
 
-  // 按这个模型记录下来的速度决定每批条数
   function batchPlan() {
     if (!config.adaptiveBatch) return { size: config.maxBatchItems, expectedMs: 0 };
     const speed = readJsonStore(SPEED_KEY, {})[config.model];
@@ -446,8 +415,6 @@
     }
   }
 
-  // 写入前先读最新存储再合并：开字幕和后台续翻可能先后写同一个视频，合并才不会互相覆盖。
-  // 写完读回核对，返回实际存下的行；写入失败返回 null
   function writeRows(key, rows) {
     if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") return null;
     try {
@@ -461,7 +428,6 @@
         return null;
       }
       log("DEBUG", `Row cache saved (${stored.size} rows, ${payload.length} chars)`);
-      // 更新索引，只保留最近的几个视频，淘汰的清空
       const index = readJsonStore(ROWS_INDEX_KEY, []);
       const list = (Array.isArray(index) ? index : []).filter((item) => item !== key);
       list.unshift(key);
@@ -469,7 +435,6 @@
         try {
           $persistentStore.write("", ROWS_PREFIX + old);
         } catch (_) {
-          // 清理失败不影响本次结果
         }
       });
       writeJsonStore(ROWS_INDEX_KEY, list.slice(0, ROWS_VIDEO_LIMIT));
@@ -571,7 +536,6 @@
     const videoId = decodeURIComponent((url.match(/[?&]docid=([^&]+)/) || [])[1] || "");
     const jobs = readJsonStore(JOB_KEY, {});
     const job = jobs[videoId];
-    // 每次都记一条，方便确认 App 是否真的发了这类请求
     log("INFO", `Playback ping ${endpoint} for ${videoId || "?"}; background job: ${job ? `${job.remaining} rows left` : "none"}`);
     if (!job || !config.backgroundTranslate || !config.aiEnabled || !Core.isConfigured(config)) return;
     const lastLoad = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
@@ -600,7 +564,6 @@
         const startedAt = Date.now();
         const outcome = await translateWithinDeadline(batches, job.languages, plan.expectedMs, {
           concurrency: BACKGROUND_CONCURRENCY,
-          // 有新的字幕加载（打开或切换视频）就停止发新批次
           shouldStop: () => {
             const latest = Number($persistentStore.read(FOREGROUND_KEY) || 0);
             if (latest > startedAt) {
@@ -621,7 +584,6 @@
             (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
         );
       }
-      // 以真正存下来的为准判断是否翻完，避免写入失败时也通知「已完成」
       const stored = readRows(job.key);
       const left = job.cues.filter((cue) => !stored.has(String(cue.id))).length;
       log("INFO", `Background progress for ${videoId}: ${job.cues.length - left}/${job.cues.length} saved`);
@@ -652,10 +614,8 @@
   }
 
   async function handleRequest() {
-    // 字幕请求意味着正在打开或切换视频：记下时间，后台续翻据此让路
     markSubtitleLoad();
     const rewritten = Core.rewriteTimedTextRequest($request.url, config);
-    // 选了模型却没填那一家的 Key 时，字幕会只显示原文；提示一下，免得以为插件坏了
     if (rewritten.reason === "missing-config" && config.aiEnabled) {
       const provider = config.provider === "OpenAI-Compatible" ? "AI" : config.provider;
       notifyFallback(
@@ -670,7 +630,6 @@
         `Requesting source subtitles (${rewritten.sourceLanguage} -> ${rewritten.targetLanguage}, ${rewritten.reason})`
       );
     }
-    // 要翻译的字幕请求去掉条件请求头，保证每次都拿到完整原文、脚本都能处理
     let headers;
     if (Core.shouldProcessResponse(rewritten.url)) {
       const original = $request.headers || {};
@@ -684,13 +643,10 @@
     doneRequest(rewritten.url, headers);
   }
 
-  // 0.4.1 起直接翻原文字幕：YouTube 对带 tlang 的官方机翻请求返回 429，
-  // 不能再用它做底座。没翻到的行暂时只显示原文。
   function markSubtitleLoad() {
     try {
       if (typeof $persistentStore !== "undefined") $persistentStore.write(String(Date.now()), FOREGROUND_KEY);
     } catch (_) {
-      // 只用于给后台让路
     }
   }
 
@@ -741,7 +697,6 @@
 
     try {
       const languages = Core.responseLanguages($request.url, config, sourceDocument.cues);
-      // 识别后原文已经是目标语言（且没有可用的第二语言）时不翻译
       if (languages.source !== "auto" && Core.languageRoot(languages.source) === Core.languageRoot(languages.target)) {
         log("INFO", `Subtitles are already in ${languages.target}; nothing to translate`);
         donePassthrough("source-only");
@@ -765,7 +720,6 @@
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
-            // 用户已切到别的视频（有更新的字幕请求）时，这个视频不再发新批次，把名额让给新视频和去广告插件
             shouldStop: () => {
               const latest = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
               if (latest > scriptStartedAt) {
@@ -780,7 +734,6 @@
       outcome.rows.forEach((row) => known.set(String(row.id), row.text));
       if (outcome.rows.length) {
         const stored = writeRows(rowsKey, new Map(outcome.rows.map((row) => [String(row.id), row.text])));
-        // 合并后可能多出后台刚翻好的行，一起显示
         if (stored) stored.forEach((text, id) => known.set(id, text));
       }
 
@@ -837,7 +790,6 @@
     .catch((error) => {
       const message = safeError(error);
       log("ERROR", message);
-      // 后台续翻在 finally 里已经放行了统计请求，这里不能再调用一次 $done
       if (isBackgroundPing) return;
       if (typeof $response === "undefined") doneRequest($request.url);
       else donePassthrough("source-only", message);
