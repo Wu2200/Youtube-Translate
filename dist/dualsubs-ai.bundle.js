@@ -27,15 +27,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 2026-10 真机实测：Loon 同一时间约 8 个请求在途，第 9 个开始排队；
-    // gemini-3.5-flash-lite 30 条一批约 2.5～3 秒。小批 + 8 并发让开头最快出结果。
-    maxBatchItems: 30,
-    maxBatchChars: 6000,
+    // 默认分批：轻量 80 条，通用模型 60 条，兼顾翻译速度与大幅减少请求次数
+    maxBatchItems: 60,
+    maxBatchChars: 12000,
     concurrency: 8,
     retries: 0,
-    timeoutMs: 15000,
-    maxWaitMs: 20000,
-    originalFetchTimeoutMs: 15000,
+    timeoutMs: 20000,
+    maxWaitMs: 25000,
+    originalFetchTimeoutMs: 20000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
     cacheEntries: 6,
@@ -97,9 +96,9 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 30 条，其他模型先保守用 15 条
+  // 没有实测速度前的初始批大小：轻量模型 80 条，其他模型推荐 60 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 30 : 15;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 80 : 60;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -136,7 +135,7 @@
     const configuredTimeoutMs = clampInteger(
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
-      15000,
+      20000,
       60000
     );
     return {
@@ -198,12 +197,12 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        20000
+        30000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
         DEFAULTS.originalFetchTimeoutMs,
-        15000,
+        20000,
         60000
       ),
       alignmentToleranceMs: clampInteger(
@@ -1154,24 +1153,24 @@
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   // 每个视频单独存储，多留一些：连续打开六七个视频再回到第一个时，不用重新翻
   const ROWS_VIDEO_LIMIT = 20;
-  // 剩余时间不够一批正常耗时（真机 2～3 秒）就不再发新批次。
+  // 剩余时间不够一批正常耗时就不再发新批次。
   const MIN_LAUNCH_MS = 2000;
   const RENDER_RESERVE_MS = 150;
   // 记住每个 Gemini 模型能接受的思考设置，下次直接用
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   // 记住每个模型每行的平均耗时，用来自动决定每批条数
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  // 每批目标耗时：留出余量，保证一次开字幕内能跑完两轮
+  // 每批目标耗时：调高上限至 80 条，减少请求总数
   const TARGET_BATCH_MS = 3000;
   const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 40;
+  const MAX_BATCH_ROWS = 80;
   // 每批附带前面几行原文作上下文，避免句子被批次切断后译得生硬
   const CONTEXT_ROWS = 2;
   // 失败批次和少返回的行最多重发一次
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 20000;
-  const MIN_MODEL_REQUEST_TIMEOUT_MS = 15000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 25000;
+  const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -1180,9 +1179,9 @@
   const isBackgroundPing =
     typeof $response === "undefined" &&
     /^https?:\/\/s\.youtube\.com\/api\/stats\//.test(String((typeof $request === "undefined" ? null : $request)?.url || ""));
-  const BACKGROUND_BUDGET_MS = 20000;
-  const BACKGROUND_REQUEST_TIMEOUT_MS = 15000;
-  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 30 秒内不启动；
+  const BACKGROUND_BUDGET_MS = 30000;
+  const BACKGROUND_REQUEST_TIMEOUT_MS = 20000;
+  // 后台续翻要给视频加载和去广告插件让路：只用 3 个并发；打开/切换视频后 3 秒内不启动；
   // 后台进行中一旦有新的字幕加载，就不再发新批次
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
@@ -1358,7 +1357,7 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    // AI 单次请求至少给 15 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
+    // AI 单次请求至少给 20 秒；总翻译期限仍由 translateWithinDeadline 单独控制。
     const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
     return Object.assign({}, config, {
       timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
@@ -1470,7 +1469,7 @@
     async function runWorker() {
       while (!finished) {
         if (options?.shouldStop?.()) return;
-        if (remainingTime() < launchThreshold) return;
+        if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
         const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
         if (index < 0) {
           // 队列暂时空了，但在途批次可能还会放回重试，等一下再看
@@ -1495,7 +1494,10 @@
           inFlight.delete(batch);
           failures.push(error);
           if (/timeout|deadline/i.test(String(error?.message || ""))) {
-            samples.push({ rows: batch.length, ms: (Date.now() - startedAt) * 1.5 });
+            samples.push({
+              rows: batch.length,
+              ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
+            });
           } else {
             // 限流稍等再发，其他错误立刻重发
             requeue(batch, batch, error?.status === 429 ? 600 : 0);
@@ -1515,7 +1517,10 @@
     clearTimeout(timer);
     finished = true;
     inFlight.forEach((startedAt, batch) => {
-      samples.push({ rows: batch.length, ms: (Date.now() - startedAt) * 1.5 });
+      samples.push({
+        rows: batch.length,
+        ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
+      });
     });
     return { rows: rows.slice(), failures, launched, retried, samples };
   }
@@ -1538,7 +1543,7 @@
     }
   }
 
-  // 按这个模型记录下来的速度决定每批条数，目标是每批约 3 秒
+  // 按这个模型记录下来的速度决定每批条数
   function batchPlan() {
     if (!config.adaptiveBatch) return { size: config.maxBatchItems, expectedMs: 0 };
     const speed = readJsonStore(SPEED_KEY, {})[config.model];
