@@ -635,6 +635,7 @@ test("rows the model dropped are re-requested on their own and filled in", async
   const result = await partialRun({
     store: new Map(),
     onPost(request, callback) {
+      const ids = requestedIds(request);
       requests.push(ids);
       // 第一次总是漏掉第 3 行，单独重发时正常返回
       const rows = ids.length > 1 ? ids.filter((id) => id !== 3) : ids;
