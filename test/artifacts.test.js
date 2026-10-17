@@ -25,7 +25,7 @@ test("generated bundle hash matches manifest and contains both runtimes", async 
   assert.equal(manifest.compatibility.bundle, "yt-ai.bundle.js");
   assert.match(bundle, /function createYouTubeAICore/);
   assert.match(bundle, /function runDualSubsAITranslator/);
-  assert.match(bundle, /const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;/);
+  assert.match(bundle, /const MIN_MODEL_REQUEST_TIMEOUT_MS = 10000;/);
   assert.doesNotMatch(bundle, /test-secret|openai-secret|gemini-secret/);
 });
 
@@ -57,8 +57,8 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
   for (const plugin of [remotePlugin, localPlugin]) {
     const scriptLines = plugin.split(/\r?\n/).filter((line) => line.startsWith("http-"));
     assert.deepEqual(scriptLines.map((line) => line.split(" ")[1]), expectedPatterns);
-    assert.match(scriptLines[0], /timeout=15,/);
-    assert.match(scriptLines[1], /timeout=16,/);
+    assert.match(scriptLines[0], /timeout=10,/);
+    assert.match(scriptLines[1], /timeout=12,/);
     assert.match(scriptLines[2], /timeout=42,/);
     const definitions = new Set(
       [...plugin.matchAll(/^([A-Za-z_]+)\s*=\s*(?:input|select|switch),/gm)].map(

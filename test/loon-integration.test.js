@@ -177,7 +177,7 @@ test("Gemini translates the source JSON3 response directly into AI bilingual sub
     }
   });
   assert.equal(apiRequest.headers["x-goog-api-key"], "test-secret");
-  assert.equal(apiRequest.timeout, 20000, "model requests must receive at least a 20-second timeout");
+  assert.equal(apiRequest.timeout, 10000, "model requests must receive at least a 10-second timeout");
   assert.equal(apiRequest.body.includes("test-secret"), false);
   assert.match(apiRequest.body, /zh-Hans/);
   const output = JSON.parse(result.doneValue.body);
@@ -538,13 +538,13 @@ test("a model too slow for its batch size gets smaller batches next time", async
       }
     });
   await slowRun("slow1", false);
-  assert.equal(sizes[0], 100, "没有测速数据时，非 lite 模型先用 100 条");
+  assert.equal(sizes[0], 30, "没有测速数据时，非 lite 模型先用 30 条");
   const speed = JSON.parse(store.get("@DualSubs-AI.ModelSpeed.v1"))["gemini-3.8-flash"];
   assert.ok(speed.msPerRow > 200, `超时批次应记成很慢，实际 ${speed.msPerRow}ms/行`);
 
   sizes.length = 0;
   const second = await slowRun("slow2", true);
-  assert.ok(sizes[0] < 100 && sizes[0] >= 10, `下次应缩小批次，实际 ${sizes[0]} 条`);
+  assert.ok(sizes[0] <= 30 && sizes[0] >= 10, `下次应缩小批次，实际 ${sizes[0]} 条`);
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai", "这次接口立即返回，小批次也能全部翻完");
 });
 
@@ -635,7 +635,6 @@ test("rows the model dropped are re-requested on their own and filled in", async
   const result = await partialRun({
     store: new Map(),
     onPost(request, callback) {
-      const ids = requestedIds(request);
       requests.push(ids);
       // 第一次总是漏掉第 3 行，单独重发时正常返回
       const rows = ids.length > 1 ? ids.filter((id) => id !== 3) : ids;

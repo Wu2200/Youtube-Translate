@@ -7,19 +7,19 @@
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   const ROWS_VIDEO_LIMIT = 20;
-  const MIN_LAUNCH_MS = 2000;
-  const RENDER_RESERVE_MS = 150;
+  const MIN_LAUNCH_MS = 1500;
+  const RENDER_RESERVE_MS = 200;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
-  const TARGET_BATCH_MS = 3000;
+  const TARGET_BATCH_MS = 2500;
   const MIN_BATCH_ROWS = 10;
-  const MAX_BATCH_ROWS = 150;
+  const MAX_BATCH_ROWS = 50;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  // 必须严格在 12 秒内截断交卷，绝对不能触碰 YouTube iOS 客户端约 15 秒的死线导致“加载字幕时出错”
-  const CLIENT_SAFE_MAX_WAIT_MS = 12000;
-  const MIN_MODEL_REQUEST_TIMEOUT_MS = 20000;
+  // 必须严格在 10 秒内截断交卷（9.5 秒死线），绝对不能触碰 YouTube iOS 客户端约 10 秒的超时死线导致“加载字幕时出错”
+  const CLIENT_SAFE_MAX_WAIT_MS = 9500;
+  const MIN_MODEL_REQUEST_TIMEOUT_MS = 10000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -279,7 +279,7 @@
     const samples = [];
     const inFlight = new Map();
     const queue = batches.slice();
-    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(6000, Math.round((expectedBatchMs || 0) * 0.5)));
+    const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(5000, Math.round((expectedBatchMs || 0) * 0.5)));
     let launched = 0;
     let retried = 0;
     let finished = false;
@@ -301,7 +301,7 @@
         const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
         if (index < 0) {
           if (!queue.length && !inFlight.size) return;
-          await delay(80);
+          await delay(60);
           continue;
         }
         const batch = queue.splice(index, 1)[0];
@@ -325,11 +325,11 @@
               rows: batch.length,
               ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
             });
-            if (remainingTime() >= 4000) {
-              requeue(batch, batch, 200);
+            if (remainingTime() >= 3000) {
+              requeue(batch, batch, 150);
             }
           } else {
-            requeue(batch, batch, error?.status === 429 ? 600 : 0);
+            requeue(batch, batch, error?.status === 429 ? 500 : 0);
           }
         }
       }
@@ -686,7 +686,7 @@
       donePassthrough("source-only");
       return;
     }
-    // 前台安全时限严格锁定在 12 秒内，防止触发 YouTube App 客户端超时弹窗
+    // 前台安全时限严格缩至 10 秒内（9.5 秒截止），抢在 YouTube App 客户端超时前安全交卷
     executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
@@ -744,7 +744,7 @@
         .filter((cue) => known.has(String(cue.id)))
         .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
       
-      // 关键防线：前台 12 秒即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
+      // 关键防线：前台 9.5 秒截止时即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
       if (!aiRows.length) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {

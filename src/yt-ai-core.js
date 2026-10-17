@@ -23,15 +23,15 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 默认分批：轻量 120 条，通用模型 100 条，配合高并发大幅压缩长视频请求次数
-    maxBatchItems: 100,
-    maxBatchChars: 16000,
+    // 默认分批：减少文本条数以大幅提高模型吐字速度（轻量 35 条，普通 30 条）
+    maxBatchItems: 30,
+    maxBatchChars: 6000,
     concurrency: 10,
     retries: 0,
-    timeoutMs: 20000,
-    // 前台安全时限严格锁定在 12 秒内，防止触发 YouTube App 客户端超时弹窗
-    maxWaitMs: 12000,
-    originalFetchTimeoutMs: 20000,
+    timeoutMs: 10000,
+    // 前台安全时限严格缩至 10 秒内（9.5 秒截止），抢在 YouTube App 客户端超时前安全交卷
+    maxWaitMs: 9500,
+    originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
     cacheEntries: 6,
@@ -93,9 +93,9 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 120 条，其他模型推荐 100 条
+  // 没有实测速度前的初始批大小：轻量模型 35 条，普通模型推荐 30 条，吐字极快
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 120 : 100;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 35 : 30;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -132,7 +132,7 @@
     const configuredTimeoutMs = clampInteger(
       raw.timeout_ms ?? raw.timeoutMs,
       DEFAULTS.timeoutMs,
-      20000,
+      10000,
       90000
     );
     return {
@@ -191,12 +191,12 @@
         raw.max_wait_ms ?? raw.maxWaitMs,
         DEFAULTS.maxWaitMs,
         3000,
-        60000
+        30000
       ),
       originalFetchTimeoutMs: clampInteger(
         raw.original_fetch_timeout_ms ?? raw.originalFetchTimeoutMs,
         DEFAULTS.originalFetchTimeoutMs,
-        20000,
+        10000,
         60000
       ),
       alignmentToleranceMs: clampInteger(
