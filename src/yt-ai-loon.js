@@ -481,7 +481,7 @@
         Object.assign(
           {
             key,
-            createdAt: Date.now>,
+            createdAt: Date.now(),
             expiresAt: ttlMs ? Date.now() + ttlMs : 0
           },
           value
