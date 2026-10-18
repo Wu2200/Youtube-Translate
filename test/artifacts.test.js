@@ -50,9 +50,9 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
   assert.doesNotMatch(remotePlugin, /\{\{SCRIPT_URL\}\}/);
 
   const expectedPatterns = [
-    "^https?:\\/\\/(www|m)\\.youtube\.com\\/api\\/timedtext(\\?.+)?$",
-    "^https?:\\/\\/(www|m)\\.youtube\.com\\/api\\/timedtext(\\?.+)?$",
-    "^https?:\\/\\/s\\.youtube\.com\\/api\\/stats\\/(watchtime|qoe|playback)(\\?.*)?$"
+    "^https?:\\/\\/(www|m)\\\\.youtube\\\\.com\\\\/api\\\\/timedtext(\\?.+)?$",
+    "^https?:\\/\\/(www|m)\\\\.youtube\\\\.com\\\\/api\\\\/timedtext(\\?.+)?$",
+    "^https?:\\/\\/s\\\\.youtube\\\\.com\\\\/api\\\\/stats\\\\/(watchtime|qoe|playback)(\\?.*)?$"
   ];
   for (const plugin of [remotePlugin, localPlugin]) {
     const scriptLines = plugin.split(/\r?\n/).filter((line) => line.startsWith("http-"));

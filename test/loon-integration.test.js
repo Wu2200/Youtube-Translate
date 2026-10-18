@@ -709,7 +709,7 @@ test("partial results tell the app not to cache them; complete results drop the 
   const complete = await runLoon({
     argument: config(),
     request: { url: processedUrl("json3", "complete"), method: "GET", headers: {} },
-    response: { status: 200, headers: body => {}, body: sourceJson3() },
+    response: { status: 200, headers, body: sourceJson3() },
     httpClient: { get: noGet, post: (_request, callback) => successfulGemini(callback) }
   });
   const h = complete.doneValue.headers;
@@ -1060,7 +1060,7 @@ test("switching to another video stops the previous video from sending new batch
         // 第 2 个请求发出时，用户切到了别的视频（新的字幕请求）
         if (calls === 2) store.set("@DualSubs-AI.LastSubtitleLoad.v1", String(Date.now() + 50));
         const ids = requestedIds(request);
-        setTimeout(() => callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` })))), 200);
+        setTimeout(() => callback(null, { status: 200 }, geminiRows([{ id: ids[0], text: `AI${ids[0]}` }])), 200);
       }
     }
   });
