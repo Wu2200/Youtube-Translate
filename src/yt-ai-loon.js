@@ -12,14 +12,14 @@
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
-  const MIN_BATCH_ROWS = 10;
-  const MAX_BATCH_ROWS = 50;
+  const MIN_BATCH_ROWS = 15;
+  const MAX_BATCH_ROWS = 80;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  // 必须严格在 10 秒内截断交卷（9.5 秒死线），绝对不能触碰 YouTube iOS 客户端约 10 秒的超时死线导致“加载字幕时出错”
-  const CLIENT_SAFE_MAX_WAIT_MS = 9500;
-  const MIN_MODEL_REQUEST_TIMEOUT_MS = 10000;
+  // 前台时限设为 12 秒（安全截断死线 12000ms），在 YouTube iOS 客户端超时前安全交卷
+  const CLIENT_SAFE_MAX_WAIT_MS = 12000;
+  const MIN_MODEL_REQUEST_TIMEOUT_MS = 12000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
   );
@@ -686,7 +686,7 @@
       donePassthrough("source-only");
       return;
     }
-    // 前台安全时限严格缩至 10 秒内（9.5 秒截止），抢在 YouTube App 客户端超时前安全交卷
+    // 前台安全时限设为 12 秒，在客户端超时前安全交卷
     executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
@@ -744,7 +744,7 @@
         .filter((cue) => known.has(String(cue.id)))
         .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
       
-      // 关键防线：前台 9.5 秒截止时即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
+      // 关键防线：前台 12 秒截止时即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
       if (!aiRows.length) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {
