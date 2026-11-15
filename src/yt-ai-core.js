@@ -23,14 +23,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    maxBatchItems: 20,
-    maxBatchChars: 1500,
-    foregroundMaxCues: 400,
+    maxBatchItems: 30,
+    maxBatchChars: 3500,
+    foregroundMaxCues: 500,
     strictOrder: true,
-    concurrency: 3,
+    concurrency: 5,
     retries: 0,
     timeoutMs: 8000,
-    maxWaitMs: 7500,
+    maxWaitMs: 7000,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -94,7 +94,7 @@
   }
 
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 35 : 25;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -461,7 +461,7 @@
   function chunkForegroundCues(cues, maxItems, maxChars, options) {
     const limitCues = Number(options?.maxCues) > 0 ? cues.slice(0, options.maxCues) : cues.slice();
     if (!limitCues.length) return [];
-    if (!options?.fastStart || limitCues.length <= 24) {
+    if (!options?.fastStart || limitCues.length <= 30) {
       return chunkCues(limitCues, maxItems, maxChars);
     }
     const firstItems = Math.min(maxItems, Number(options.firstBatchItems) || 12);
@@ -494,8 +494,7 @@
         }
       }
     }
-    if (!strictOrder) return all;
-    return prefix.length ? prefix : all;
+    return strictOrder ? prefix : all;
   }
 
   function responseSchema() {

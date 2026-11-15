@@ -47,8 +47,8 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.aiEnabled, true);
   assert.equal(config.concurrency, 16);
   assert.equal(config.timeoutMs, 8000);
-  assert.equal(config.maxWaitMs, 7500);
-  assert.equal(config.foregroundMaxCues, 400);
+  assert.equal(config.maxWaitMs, 7000);
+  assert.equal(config.foregroundMaxCues, 500);
   assert.equal(config.strictOrder, true);
   assert.equal(config.originalFetchTimeoutMs, 10000);
   assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 8000);
@@ -117,17 +117,17 @@ test("default batching bounds request size by char budget and supports ordered p
   }));
   const config = Core.normalizeConfig({});
   const chunks = Core.chunkCues(cues, config.maxBatchItems, config.maxBatchChars);
-  assert.equal(config.maxBatchItems, 25);
-  assert.equal(config.maxBatchChars, 1500);
-  assert.equal(config.concurrency, 3);
-  assert.equal(config.foregroundMaxCues, 400);
-  assert.ok(chunks.every((chunk) => chunk.length <= 25));
+  assert.equal(config.maxBatchItems, 35);
+  assert.equal(config.maxBatchChars, 3500);
+  assert.equal(config.concurrency, 5);
+  assert.equal(config.foregroundMaxCues, 500);
+  assert.ok(chunks.every((chunk) => chunk.length <= 35));
   assert.deepEqual(chunks[0].map((cue) => cue.id).slice(0, 3), [0, 1, 2], "按时间顺序，开头先翻");
   assert.equal(chunks.flat().length, 962);
 
   const longCues = Array.from({ length: 40 }, (_, id) => ({
     id,
-    text: "This is a much longer spoken sentence with plenty of detail so char budget decides batch count. ".repeat(2).trim()
+    text: "This is a much longer spoken sentence with plenty of detail so char budget decides batch count. ".repeat(3).trim()
   }));
   const charBoundChunks = Core.chunkCues(longCues, config.maxBatchItems, config.maxBatchChars);
   assert.ok(charBoundChunks.every((chunk) => chunk.length < 15), "长文本按字符数自动缩小每批数量");
@@ -140,12 +140,13 @@ test("default batching bounds request size by char budget and supports ordered p
 
   const known = new Map();
   for (let i = 0; i < 6; i += 1) known.set(String(i), `AI${i}`);
-  // 中间 6..12 未翻译（整块断档 >= 5 行），13..18 已翻译
   for (let i = 13; i < 18; i += 1) known.set(String(i), `AI${i}`);
   const ordered = Core.selectOrderedRows(cues.slice(0, 20), known, true);
   assert.deepEqual(ordered.map((r) => r.id), [0, 1, 2, 3, 4, 5], "开启严格顺序时遇到整块断档仅展示开头连续部分");
   const unordered = Core.selectOrderedRows(cues.slice(0, 20), known, false);
   assert.equal(unordered.length, 11, "关闭严格顺序时保留全部已翻行");
+  const missingHead = new Map([[ "10", "AI10" ], [ "11", "AI11" ]]);
+  assert.deepEqual(Core.selectOrderedRows(cues.slice(0, 20), missingHead, true), [], "第 0 批缺失时不跳段展示中间译文");
 });
 
 test("salvages usable rows from a batch that drops or duplicates a line", () => {
@@ -398,18 +399,18 @@ test("provider and API key follow the selected model", () => {
 });
 
 test("batch size starts by model speed class and adapts when omitted or 0", () => {
-  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 25);
-  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 25);
-  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 25);
-  assert.equal(Core.initialBatchSize("deepseek-flash"), 25);
-  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 20);
-  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 20);
+  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 35);
+  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 35);
+  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 35);
+  assert.equal(Core.initialBatchSize("deepseek-flash"), 35);
+  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 25);
+  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 25);
   const adaptive = Core.normalizeConfig({ model: "gemini-3.8-flash" });
   assert.equal(adaptive.adaptiveBatch, true);
-  assert.equal(adaptive.maxBatchItems, 20);
+  assert.equal(adaptive.maxBatchItems, 25);
   const adaptiveZero = Core.normalizeConfig({ model: "gemini-3.8-flash", max_batch_items: "0" });
   assert.equal(adaptiveZero.adaptiveBatch, true);
-  assert.equal(adaptiveZero.maxBatchItems, 20);
+  assert.equal(adaptiveZero.maxBatchItems, 25);
   const fixed = Core.normalizeConfig({ model: "gemini-3.8-flash", max_batch_items: "45" });
   assert.equal(fixed.adaptiveBatch, false);
   assert.equal(fixed.maxBatchItems, 45);

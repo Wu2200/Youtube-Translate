@@ -187,6 +187,24 @@ test("Gemini translates the source JSON3 response directly into AI bilingual sub
   assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
+test("raising max_wait_ms expands single-request timeout beyond 8 seconds", async () => {
+  let apiRequest;
+  const result = await runLoon({
+    argument: { ...config(), max_wait_ms: "15000" },
+    request: { url: processedUrl("json3", "longwait"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: sourceJson3() },
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        apiRequest = request;
+        successfulGemini(callback);
+      }
+    }
+  });
+  assert.ok(apiRequest.timeout > 14000, `单批请求超时应随 max_wait_ms 放宽，实际 ${apiRequest.timeout}`);
+  assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai");
+});
+
 test("Gemini success preserves srv3 and paragraph timing", async () => {
   const result = await runLoon({
     argument: config(),
@@ -407,7 +425,53 @@ test("deadline returns finished AI rows, leaves the rest as source text, then re
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
-test("strictOrder hides out-of-order chunks after a missing batch while still caching them", async () => {
+test("strictOrder uses small fast-start head batches and hides out-of-order chunks while caching them", async () => {
+  const store = new Map();
+  const batches = [];
+  const result = await runLoon({
+    argument: {
+      ...config(),
+      parallel: "3",
+      batch_size: "30",
+      max_wait_ms: "3000",
+      timeout_ms: "3000",
+      strict_order: "true"
+    },
+    request: { url: processedUrl("json3", "ordered"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(60) },
+    store,
+    doneTimeoutMs: 4500,
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        batches.push(ids);
+        // 第 0 批 (0..11) 和第 2 批 (24..53) 完成，中间第 1 批 (12..23) 超时未返
+        if (ids[0] === 0 || ids[0] === 24) {
+          callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+        }
+      }
+    }
+  });
+  assert.equal(batches[0].length, 12, "strictOrder 开启时第 0 批使用 12 条微包护航");
+  assert.equal(batches[1].length, 12, "strictOrder 开启时第 1 批使用 12 条微包护航");
+  assert.equal(batches[2].length, 30, "第 2 批起恢复用户设置的大包大小");
+  const events = JSON.parse(result.doneValue.body).events.map((event) => event.segs[0].utf8);
+  assert.deepEqual(
+    events.slice(0, 12),
+    Array.from({ length: 12 }, (_, i) => `AI${i}\nLine ${i}`)
+  );
+  assert.deepEqual(
+    events.slice(24, 54),
+    Array.from({ length: 30 }, (_, i) => `Line ${i + 24}`),
+    "中间缺整批时，后面的零散块不跳跃显示"
+  );
+  const rows = storedRows(store);
+  assert.equal(rows["24"], "AI24", "但第 2 批已保存进缓存，不浪费额度");
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).ordered.remaining, 18);
+});
+
+test("disabling strictOrder removes window restrictions and renders all finished chunks", async () => {
   const store = new Map();
   const result = await runLoon({
     argument: {
@@ -416,9 +480,9 @@ test("strictOrder hides out-of-order chunks after a missing batch while still ca
       batch_size: "6",
       max_wait_ms: "3000",
       timeout_ms: "3000",
-      strict_order: "true"
+      strict_order: "false"
     },
-    request: { url: processedUrl("json3", "ordered"), method: "GET", headers: {} },
+    request: { url: processedUrl("json3", "unordered"), method: "GET", headers: {} },
     response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(18) },
     store,
     doneTimeoutMs: 4500,
@@ -426,7 +490,6 @@ test("strictOrder hides out-of-order chunks after a missing batch while still ca
       get: noGet,
       post(request, callback) {
         const ids = requestedIds(request);
-        // 第 0 批 (0..5) 和第 2 批 (12..17) 完成，中间第 1 批 (6..11) 超时未返
         if (ids[0] === 0 || ids[0] === 12) {
           callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
         }
@@ -434,18 +497,9 @@ test("strictOrder hides out-of-order chunks after a missing batch while still ca
     }
   });
   const events = JSON.parse(result.doneValue.body).events.map((event) => event.segs[0].utf8);
-  assert.deepEqual(
-    events.slice(0, 6),
-    Array.from({ length: 6 }, (_, i) => `AI${i}\nLine ${i}`)
-  );
-  assert.deepEqual(
-    events.slice(12, 18),
-    Array.from({ length: 6 }, (_, i) => `Line ${i + 12}`),
-    "中间缺整批时，后面的零散块不跳跃显示"
-  );
-  const rows = storedRows(store);
-  assert.equal(rows["12"], "AI12", "但第 2 批已保存进缓存，不浪费额度");
-  assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).ordered.remaining, 6);
+  assert.equal(events[0], "AI0\nLine 0");
+  assert.equal(events[6], "Line 6");
+  assert.equal(events[12], "AI12\nLine 12");
 });
 
 test("retried batches jump back to the front of the queue in original order", async () => {
@@ -617,7 +671,7 @@ test("a model too slow for its batch size gets smaller batches next time", async
 
   sizes.length = 0;
   const second = await slowRun("slow2", true);
-  assert.ok(sizes[2] <= 20 && sizes[2] >= 8, `下次应缩小批次，实际 ${sizes[2]} 条`);
+  assert.ok(sizes[2] <= 25 && sizes[2] >= 8, `下次应缩小批次，实际 ${sizes[2]} 条`);
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai", "这次接口立即返回，小批次也能全部翻完");
 });
 

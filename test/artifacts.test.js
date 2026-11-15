@@ -76,11 +76,11 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
     assert.match(plugin, /^base_url = input,/m);
     assert.match(plugin, /^api_key = input,/m);
     assert.match(plugin, /^strict_order = switch,true,/m);
-    assert.match(plugin, /^max_wait_ms = input,"7500"/m);
-    assert.match(plugin, /^foreground_max_cues = input,"400"/m);
-    assert.match(plugin, /^max_batch_items = input,"20"/m);
-    assert.match(plugin, /^max_batch_chars = input,"1500"/m);
-    assert.match(plugin, /^concurrency = input,"3"/m);
+    assert.match(plugin, /^max_wait_ms = input,"7000"/m);
+    assert.match(plugin, /^foreground_max_cues = input,"500"/m);
+    assert.match(plugin, /^max_batch_items = input,"30"/m);
+    assert.match(plugin, /^max_batch_chars = input,"3500"/m);
+    assert.match(plugin, /^concurrency = input,"5"/m);
     assert.match(plugin, /^hostname = www\.youtube\.com, m\.youtube\.com, s\.youtube\.com$/m);
   }
 });
