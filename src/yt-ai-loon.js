@@ -8,17 +8,16 @@
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   const ROWS_VIDEO_LIMIT = 20;
   const MIN_LAUNCH_MS = 1500;
-  const RENDER_RESERVE_MS = 200;
+  const RENDER_RESERVE_MS = 250;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
-  const MIN_BATCH_ROWS = 15;
-  const MAX_BATCH_ROWS = 60;
+  const MIN_BATCH_ROWS = 8;
+  const MAX_BATCH_ROWS = 30;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  // 前台时限设为 8 秒（安全截断死线 8000ms），在 YouTube iOS 客户端超时前安全交卷
-  const CLIENT_SAFE_MAX_WAIT_MS = 8000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 6000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
@@ -686,7 +685,6 @@
       donePassthrough("source-only");
       return;
     }
-    // 前台安全时限设为 8 秒，在客户端超时前安全交卷
     executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
@@ -711,15 +709,22 @@
       const pending = sourceDocument.cues.filter((cue) => !known.has(String(cue.id)));
       const plan = batchPlan();
       const batches = attachContext(
-        Core.chunkCues(pending, plan.size, config.maxBatchChars),
+        Core.chunkForegroundCues(pending, plan.size, config.maxBatchChars, {
+          maxCues: config.foregroundMaxCues,
+          fastStart: config.adaptiveBatch,
+          firstBatchItems: 12,
+          firstBatchChars: 1000,
+          firstBatchCount: 2
+        }),
         sourceDocument.cues
       );
       const rememberedThinking = readJsonStore(THINKING_KEY, {})[config.model];
       if (config.provider === "Gemini" && rememberedThinking) config.thinkingLevel = rememberedThinking;
+      const foregroundTotal = batches.reduce((sum, batch) => sum + batch.length, 0);
       log(
         "INFO",
-        `AI translating ${pending.length}/${sourceDocument.cues.length} cues in ${batches.length} batch(es) ` +
-          `of ${plan.size} via ${config.provider} ${config.model}`
+        `AI translating ${foregroundTotal}/${pending.length} pending (${sourceDocument.cues.length} total) cues in ${batches.length} batch(es) ` +
+          `of <=${plan.size} rows / ${config.maxBatchChars} chars via ${config.provider} ${config.model}`
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
@@ -743,8 +748,7 @@
       const aiRows = sourceDocument.cues
         .filter((cue) => known.has(String(cue.id)))
         .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
-      
-      // 关键防线：前台 8 秒截止时即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
+
       if (!aiRows.length) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {

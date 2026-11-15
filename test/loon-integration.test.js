@@ -533,19 +533,70 @@ test("a model too slow for its batch size gets smaller batches next time", async
           const ids = requestedIds(request);
           sizes.push(ids.length);
           if (respond) callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
-          // respond = false：一直不返回，模拟这批在时限内翻不完
         }
       }
     });
   await slowRun("slow1", false);
-  assert.equal(sizes[0], 40, "没有测速数据时，非 lite 模型先用 40 条");
+  assert.equal(sizes[0], 12);
+  assert.equal(sizes[1], 12);
   const speed = JSON.parse(store.get("@DualSubs-AI.ModelSpeed.v1"))["gemini-3.8-flash"];
   assert.ok(speed.msPerRow > 200, `超时批次应记成很慢，实际 ${speed.msPerRow}ms/行`);
 
   sizes.length = 0;
   const second = await slowRun("slow2", true);
-  assert.ok(sizes[0] <= 40 && sizes[0] >= 15, `下次应缩小批次，实际 ${sizes[0]} 条`);
+  assert.ok(sizes[2] <= 20 && sizes[2] >= 8, `下次应缩小批次，实际 ${sizes[2]} 条`);
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai", "这次接口立即返回，小批次也能全部翻完");
+});
+
+test("long videos cap foreground batches and leave the rest for background translation", async () => {
+  const store = new Map();
+  const foregroundBatches = [];
+  const first = await runLoon({
+    argument: { ...config(), model: "gemini-3.5-flash-lite", foreground_max_cues: "60" },
+    request: { url: processedUrl("json3", "longcap"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(150) },
+    store,
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        foregroundBatches.push(ids);
+        callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+      }
+    }
+  });
+  const requestedCount = foregroundBatches.reduce((sum, batch) => sum + batch.length, 0);
+  assert.equal(requestedCount, 60);
+  assert.equal(foregroundBatches[0].length, 12);
+  assert.equal(foregroundBatches[1].length, 12);
+  assert.equal(first.doneValue.headers["x-dualsubs-ai-result"], "ai-partial");
+
+  const jobs = JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1"));
+  assert.equal(jobs.longcap.remaining, 90);
+
+  const ping = await runLoon({
+    argument: { ...config(), model: "gemini-3.5-flash-lite" },
+    request: { url: pingUrl("longcap"), method: "POST", headers: {} },
+    store,
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+      }
+    }
+  });
+  assert.equal(JSON.stringify(ping.doneValue), "{}");
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).longcap, undefined);
+
+  const reopened = await runLoon({
+    argument: { ...config(), model: "gemini-3.5-flash-lite" },
+    request: { url: processedUrl("json3", "longcap"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(150) },
+    store,
+    httpClient: { get: noGet, post: () => assert.fail("重开后应直接完整命中行缓存") }
+  });
+  assert.equal(reopened.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
 test("a model without its provider key shows a hint instead of failing silently", async () => {

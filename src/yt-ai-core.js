@@ -23,14 +23,13 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 默认分批：40-60 行（普通 40 条，轻量 60 条）
-    maxBatchItems: 40,
-    maxBatchChars: 12000,
-    concurrency: 10,
+    maxBatchItems: 20,
+    maxBatchChars: 1800,
+    foregroundMaxCues: 260,
+    concurrency: 4,
     retries: 0,
     timeoutMs: 8000,
-    // 前台安全时限设为 8 秒，在客户端断开前安全交卷
-    maxWaitMs: 8000,
+    maxWaitMs: 6000,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -93,9 +92,8 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 60 条，普通模型 40 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 60 : 40;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -180,6 +178,12 @@
         DEFAULTS.maxBatchChars,
         500,
         50000
+      ),
+      foregroundMaxCues: clampInteger(
+        raw.foreground_max_cues ?? raw.foregroundMaxCues,
+        DEFAULTS.foregroundMaxCues,
+        20,
+        1000
       ),
       concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 16),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
@@ -448,6 +452,20 @@
     }
     if (current.length) chunks.push(current);
     return chunks;
+  }
+
+  function chunkForegroundCues(cues, maxItems, maxChars, options) {
+    const limitCues = Number(options?.maxCues) > 0 ? cues.slice(0, options.maxCues) : cues.slice();
+    if (!limitCues.length) return [];
+    if (!options?.fastStart || limitCues.length <= 24) {
+      return chunkCues(limitCues, maxItems, maxChars);
+    }
+    const firstItems = Math.min(maxItems, Number(options.firstBatchItems) || 12);
+    const firstChars = Math.min(maxChars, Number(options.firstBatchChars) || 1000);
+    const firstBatchCount = Number(options.firstBatchCount) || 2;
+    const head = chunkCues(limitCues, firstItems, firstChars).slice(0, firstBatchCount);
+    const consumed = head.reduce((sum, batch) => sum + batch.length, 0);
+    return head.concat(chunkCues(limitCues.slice(consumed), maxItems, maxChars));
   }
 
   function responseSchema() {
@@ -1120,6 +1138,7 @@
     extractCues,
     extractSrv3Cues,
     chunkCues,
+    chunkForegroundCues,
     responseSchema,
     buildPrompts,
     normalizeOpenAIEndpoint,

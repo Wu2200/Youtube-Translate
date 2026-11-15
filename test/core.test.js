@@ -47,7 +47,8 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(config.aiEnabled, true);
   assert.equal(config.concurrency, 16);
   assert.equal(config.timeoutMs, 8000);
-  assert.equal(config.maxWaitMs, 8000);
+  assert.equal(config.maxWaitMs, 6000);
+  assert.equal(config.foregroundMaxCues, 260);
   assert.equal(config.originalFetchTimeoutMs, 10000);
   assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 8000);
 });
@@ -105,7 +106,7 @@ test("extracts timed JSON3 cues and chunks deterministically", () => {
   );
 });
 
-test("default batching uses balanced batches to minimize request count within deadline", () => {
+test("default batching bounds request size by char budget and caps foreground cues", () => {
   const cues = Array.from({ length: 962 }, (_, id) => ({
     id,
     eventIndex: id,
@@ -115,12 +116,31 @@ test("default batching uses balanced batches to minimize request count within de
   }));
   const config = Core.normalizeConfig({});
   const chunks = Core.chunkCues(cues, config.maxBatchItems, config.maxBatchChars);
-  assert.equal(config.maxBatchItems, 60);
-  assert.equal(config.concurrency, 10);
-  assert.equal(chunks.length, 17);
-  assert.ok(chunks.every((chunk) => chunk.length <= 60));
+  assert.equal(config.maxBatchItems, 25);
+  assert.equal(config.maxBatchChars, 1800);
+  assert.equal(config.concurrency, 4);
+  assert.equal(config.foregroundMaxCues, 260);
+  assert.ok(chunks.every((chunk) => chunk.length <= 25));
   assert.deepEqual(chunks[0].map((cue) => cue.id).slice(0, 3), [0, 1, 2], "按时间顺序，开头先翻");
   assert.equal(chunks.flat().length, 962);
+
+  const longCues = Array.from({ length: 40 }, (_, id) => ({
+    id,
+    text: "This is a much longer spoken sentence with plenty of detail so char budget decides batch count. ".repeat(2).trim()
+  }));
+  const charBoundChunks = Core.chunkCues(longCues, config.maxBatchItems, config.maxBatchChars);
+  assert.ok(charBoundChunks.every((chunk) => chunk.length < 15), "长文本按字符数自动缩小每批数量");
+
+  const foregroundChunks = Core.chunkForegroundCues(cues, config.maxBatchItems, config.maxBatchChars, {
+    maxCues: config.foregroundMaxCues,
+    fastStart: true,
+    firstBatchItems: 12,
+    firstBatchChars: 1000,
+    firstBatchCount: 2
+  });
+  assert.equal(foregroundChunks[0].length, 12);
+  assert.equal(foregroundChunks[1].length, 12);
+  assert.equal(foregroundChunks.flat().length, 260);
 });
 
 test("salvages usable rows from a batch that drops or duplicates a line", () => {
@@ -373,18 +393,18 @@ test("provider and API key follow the selected model", () => {
 });
 
 test("batch size starts by model speed class and adapts unless fixed", () => {
-  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 60);
-  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 60);
-  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 60);
-  assert.equal(Core.initialBatchSize("deepseek-flash"), 60);
-  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 40);
-  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 40);
+  assert.equal(Core.initialBatchSize("gemini-3.5-flash-lite"), 25);
+  assert.equal(Core.initialBatchSize("gpt-5.4-nano"), 25);
+  assert.equal(Core.initialBatchSize("claude-haiku-4-5"), 25);
+  assert.equal(Core.initialBatchSize("deepseek-flash"), 25);
+  assert.equal(Core.initialBatchSize("gemini-3.8-flash"), 20);
+  assert.equal(Core.initialBatchSize("deepseek-v4-pro"), 20);
   const adaptive = Core.normalizeConfig({ model: "gemini-3.8-flash" });
   assert.equal(adaptive.adaptiveBatch, true);
-  assert.equal(adaptive.maxBatchItems, 40);
-  const fixed = Core.normalizeConfig({ model: "gemini-3.8-flash", batch_size: "20" });
+  assert.equal(adaptive.maxBatchItems, 20);
+  const fixed = Core.normalizeConfig({ model: "gemini-3.8-flash", batch_size: "16" });
   assert.equal(fixed.adaptiveBatch, false);
-  assert.equal(fixed.maxBatchItems, 20);
+  assert.equal(fixed.maxBatchItems, 16);
 });
 
 test("OpenAI and DeepSeek requests disable reasoning the way each provider expects", () => {
