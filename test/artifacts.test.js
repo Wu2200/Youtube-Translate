@@ -58,7 +58,7 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
     const scriptLines = plugin.split(/\r?\n/).filter((line) => line.startsWith("http-"));
     assert.deepEqual(scriptLines.map((line) => line.split(" ")[1]), expectedPatterns);
     assert.match(scriptLines[0], /timeout=10,/);
-    assert.match(scriptLines[1], /timeout=10,/);
+    assert.match(scriptLines[1], /timeout=35,/);
     assert.match(scriptLines[2], /timeout=42,/);
     const definitions = new Set(
       [...plugin.matchAll(/^([A-Za-z_]+)\s*=\s*(?:input|select|switch),/gm)].map(
@@ -75,6 +75,11 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
     assert.match(plugin, /^model = input,"gpt-4o-mini"/m);
     assert.match(plugin, /^base_url = input,/m);
     assert.match(plugin, /^api_key = input,/m);
+    assert.match(plugin, /^max_wait_ms = input,"7000"/m);
+    assert.match(plugin, /^foreground_max_cues = input,"400"/m);
+    assert.match(plugin, /^max_batch_items = input,"30"/m);
+    assert.match(plugin, /^max_batch_chars = input,"2500"/m);
+    assert.match(plugin, /^concurrency = input,"6"/m);
     assert.match(plugin, /^hostname = www\.youtube\.com, m\.youtube\.com, s\.youtube\.com$/m);
   }
 });

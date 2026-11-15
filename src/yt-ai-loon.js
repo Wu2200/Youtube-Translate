@@ -7,17 +7,16 @@
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   const ROWS_VIDEO_LIMIT = 20;
-  const MIN_LAUNCH_MS = 1500;
+  const MIN_LAUNCH_MS = 1200;
   const RENDER_RESERVE_MS = 250;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
   const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 30;
+  const MAX_BATCH_ROWS = 60;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 6000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
@@ -685,7 +684,7 @@
       donePassthrough("source-only");
       return;
     }
-    executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
+    executionDeadline = Date.now() + config.maxWaitMs;
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
       sourceDocument = Core.resegmentDocument(sourceDocument);
@@ -724,7 +723,7 @@
       log(
         "INFO",
         `AI translating ${foregroundTotal}/${pending.length} pending (${sourceDocument.cues.length} total) cues in ${batches.length} batch(es) ` +
-          `of <=${plan.size} rows / ${config.maxBatchChars} chars via ${config.provider} ${config.model}`
+          `of <=${plan.size} rows / ${config.maxBatchChars} chars, parallel=${config.concurrency}, wait=${config.maxWaitMs}ms via ${config.provider} ${config.model}`
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
