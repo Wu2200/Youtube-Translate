@@ -476,7 +476,7 @@
     return head.concat(chunkCues(limitCues.slice(consumed), maxItems, maxChars));
   }
 
-  function selectOrderedRows(cues, known, strictOrder, gapLimit = 5) {
+  function selectOrderedRows(cues, known, strictOrder, gapLimit = 3) {
     const read = (id) => (known instanceof Map ? known.get(String(id)) : known?.[String(id)]);
     const all = [];
     const prefix = [];
@@ -819,28 +819,44 @@
     });
   }
 
-  // 大幅放宽限制：按 ID 匹配优先；若第三方模型从 1..N 重新编号导致 ID 错位，按顺序对齐挽救
   function salvageTranslations(payload, batch) {
     const rows = Array.isArray(payload)
       ? payload
       : payload?.translations || payload?.data || payload?.items;
     if (!Array.isArray(rows)) throw new Error("Translation payload is not an array");
+    const batchIds = new Set(batch.map((cue) => String(cue.id)));
     const byId = new Map();
     const duplicated = new Set();
+    let matchedCount = 0;
     rows.forEach((row) => {
       const id = String(row?.id);
+      if (batchIds.has(id)) matchedCount += 1;
       if (byId.has(id)) duplicated.add(id);
       byId.set(id, row);
     });
+    const firstId = Number(rows[0]?.id);
+    const sequentialRenumbered =
+      rows.length >= 2 &&
+      Number.isInteger(firstId) &&
+      (firstId === 0 || firstId === 1) &&
+      !batchIds.has(String(rows[0]?.id)) &&
+      rows.every((row, index) => Number(row?.id) === firstId + index);
+    const looksRenumbered =
+      sequentialRenumbered ||
+      (rows.length > 0 &&
+        !batchIds.has(String(rows[0]?.id)) &&
+        matchedCount <= rows.length * 0.5 &&
+        firstId <= 1);
     const result = [];
-    batch.forEach((cue) => {
-      const id = String(cue.id);
-      if (duplicated.has(id)) return;
-      const text = cleanCueText(byId.get(id)?.text);
-      if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
-      result.push({ id: cue.id, text });
-    });
-    // 如果直接 ID 匹配失败（模型自作主张重新编号），按行序号按序映射挽救
+    if (!looksRenumbered) {
+      batch.forEach((cue) => {
+        const id = String(cue.id);
+        if (duplicated.has(id)) return;
+        const text = cleanCueText(byId.get(id)?.text);
+        if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
+        result.push({ id: cue.id, text });
+      });
+    }
     if (!result.length && rows.length > 0) {
       batch.forEach((cue, index) => {
         if (!rows[index]) return;
@@ -1490,20 +1506,48 @@
     const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(5000, Math.round((expectedBatchMs || 0) * 0.5)));
     const workerCount = Math.min(options?.concurrency || config.concurrency, Math.max(1, batches.length));
     const orderedMode = options?.strictOrder !== false;
+    const defaultMaxRetries = options?.maxRetries ?? MAX_BATCH_RETRIES;
     let launched = 0;
     let retried = 0;
     let finished = false;
 
-    function requeue(cues, parent, waitMs) {
-      if ((parent.attempt || 0) >= MAX_BATCH_RETRIES || !cues.length) return;
+    function pushSorted(item) {
+      queue.push(item);
+      queue.sort((a, b) => (a.seq - b.seq) || ((a[0]?.id ?? 0) - (b[0]?.id ?? 0)));
+    }
+
+    function requeue(cues, parent, waitMs, retryLimit) {
+      const cap = retryLimit ?? defaultMaxRetries;
+      if ((parent.attempt || 0) >= cap || !cues.length) return;
       const retry = cues.slice();
       retry.seq = parent.seq;
       retry.attempt = (parent.attempt || 0) + 1;
       retry.context = parent.context;
       retry.notBefore = Date.now() + (waitMs || 0);
-      queue.push(retry);
-      queue.sort((a, b) => a.seq - b.seq);
+      pushSorted(retry);
       retried += 1;
+    }
+
+    function splitAndRequeue(batch, waitMs, retryLimit) {
+      const cap = retryLimit ?? defaultMaxRetries;
+      if ((batch.attempt || 0) >= cap || batch.length < 10) {
+        requeue(batch, batch, waitMs, cap);
+        return;
+      }
+      const mid = Math.ceil(batch.length / 2);
+      const left = batch.slice(0, mid);
+      const right = batch.slice(mid);
+      left.seq = batch.seq;
+      left.attempt = (batch.attempt || 0) + 1;
+      left.context = batch.context;
+      left.notBefore = Date.now() + (waitMs || 0);
+      right.seq = batch.seq;
+      right.attempt = (batch.attempt || 0) + 1;
+      right.context = batch.slice(Math.max(0, mid - CONTEXT_ROWS), mid).map((cue) => cue.text);
+      right.notBefore = Date.now() + (waitMs || 0);
+      pushSorted(left);
+      pushSorted(right);
+      retried += 2;
     }
 
     function nextReadyIndex() {
@@ -1518,7 +1562,7 @@
       queue.forEach((item) => {
         if (item.seq < headSeq) headSeq = item.seq;
       });
-      const tailWindow = remainingTime() <= 2200 ? 2 : Math.max(workerCount * 2, 4);
+      const tailWindow = remainingTime() <= 2600 ? 1 : Math.max(workerCount * 2, 4);
       const maxSeq = headSeq + tailWindow;
       return queue.findIndex((item) => {
         if (item.notBefore && item.notBefore > now) return false;
@@ -1562,16 +1606,21 @@
           if (finished) return;
           inFlight.delete(batch);
           failures.push(error);
-          if (/timeout|deadline/i.test(String(error?.message || ""))) {
+          const message = String(error?.message || "");
+          if (/timeout|deadline/i.test(message)) {
             samples.push({
               rows: batch.length,
               ms: Math.max((Date.now() - startedAt) * 1.5, batch.length * 220)
             });
-            if (remainingTime() >= 3000) {
-              requeue(batch, batch, 150);
+            if (remainingTime() >= 2500) {
+              splitAndRequeue(batch, 120);
             }
+          } else if (error?.status === 429) {
+            splitAndRequeue(batch, 900, Math.max(defaultMaxRetries, 2));
+          } else if (/parse|json|no usable rows|not an array|no text|empty|no message content/i.test(message)) {
+            splitAndRequeue(batch, 0, Math.max(defaultMaxRetries, 2));
           } else {
-            requeue(batch, batch, error?.status === 429 ? 500 : 0);
+            requeue(batch, batch, 0);
           }
         }
       }
@@ -1806,7 +1855,8 @@
         const startedAt = Date.now();
         const outcome = await translateWithinDeadline(batches, job.languages, plan.expectedMs, {
           concurrency: BACKGROUND_CONCURRENCY,
-          strictOrder: false,
+          strictOrder: true,
+          maxRetries: 2,
           shouldStop: () => {
             const latest = Number($persistentStore.read(FOREGROUND_KEY) || 0);
             if (latest > startedAt) {
