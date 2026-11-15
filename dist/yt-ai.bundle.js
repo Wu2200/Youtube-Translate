@@ -27,14 +27,13 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    // 默认分批：40-60 行（普通 40 条，轻量 60 条）
-    maxBatchItems: 40,
-    maxBatchChars: 12000,
-    concurrency: 10,
+    maxBatchItems: 20,
+    maxBatchChars: 1800,
+    foregroundMaxCues: 260,
+    concurrency: 4,
     retries: 0,
     timeoutMs: 8000,
-    // 前台安全时限设为 8 秒，在客户端断开前安全交卷
-    maxWaitMs: 8000,
+    maxWaitMs: 6000,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -97,9 +96,8 @@
     return "";
   }
 
-  // 没有实测速度前的初始批大小：轻量模型 60 条，普通模型 40 条
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 60 : 40;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -184,6 +182,12 @@
         DEFAULTS.maxBatchChars,
         500,
         50000
+      ),
+      foregroundMaxCues: clampInteger(
+        raw.foreground_max_cues ?? raw.foregroundMaxCues,
+        DEFAULTS.foregroundMaxCues,
+        20,
+        1000
       ),
       concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 16),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
@@ -452,6 +456,20 @@
     }
     if (current.length) chunks.push(current);
     return chunks;
+  }
+
+  function chunkForegroundCues(cues, maxItems, maxChars, options) {
+    const limitCues = Number(options?.maxCues) > 0 ? cues.slice(0, options.maxCues) : cues.slice();
+    if (!limitCues.length) return [];
+    if (!options?.fastStart || limitCues.length <= 24) {
+      return chunkCues(limitCues, maxItems, maxChars);
+    }
+    const firstItems = Math.min(maxItems, Number(options.firstBatchItems) || 12);
+    const firstChars = Math.min(maxChars, Number(options.firstBatchChars) || 1000);
+    const firstBatchCount = Number(options.firstBatchCount) || 2;
+    const head = chunkCues(limitCues, firstItems, firstChars).slice(0, firstBatchCount);
+    const consumed = head.reduce((sum, batch) => sum + batch.length, 0);
+    return head.concat(chunkCues(limitCues.slice(consumed), maxItems, maxChars));
   }
 
   function responseSchema() {
@@ -1124,6 +1142,7 @@
     extractCues,
     extractSrv3Cues,
     chunkCues,
+    chunkForegroundCues,
     responseSchema,
     buildPrompts,
     normalizeOpenAIEndpoint,
@@ -1164,17 +1183,16 @@
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   const ROWS_VIDEO_LIMIT = 20;
   const MIN_LAUNCH_MS = 1500;
-  const RENDER_RESERVE_MS = 200;
+  const RENDER_RESERVE_MS = 250;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
-  const MIN_BATCH_ROWS = 15;
-  const MAX_BATCH_ROWS = 60;
+  const MIN_BATCH_ROWS = 8;
+  const MAX_BATCH_ROWS = 30;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  // 前台时限设为 8 秒（安全截断死线 8000ms），在 YouTube iOS 客户端超时前安全交卷
-  const CLIENT_SAFE_MAX_WAIT_MS = 8000;
+  const CLIENT_SAFE_MAX_WAIT_MS = 6000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
@@ -1842,7 +1860,6 @@
       donePassthrough("source-only");
       return;
     }
-    // 前台安全时限设为 8 秒，在客户端超时前安全交卷
     executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
@@ -1867,15 +1884,22 @@
       const pending = sourceDocument.cues.filter((cue) => !known.has(String(cue.id)));
       const plan = batchPlan();
       const batches = attachContext(
-        Core.chunkCues(pending, plan.size, config.maxBatchChars),
+        Core.chunkForegroundCues(pending, plan.size, config.maxBatchChars, {
+          maxCues: config.foregroundMaxCues,
+          fastStart: config.adaptiveBatch,
+          firstBatchItems: 12,
+          firstBatchChars: 1000,
+          firstBatchCount: 2
+        }),
         sourceDocument.cues
       );
       const rememberedThinking = readJsonStore(THINKING_KEY, {})[config.model];
       if (config.provider === "Gemini" && rememberedThinking) config.thinkingLevel = rememberedThinking;
+      const foregroundTotal = batches.reduce((sum, batch) => sum + batch.length, 0);
       log(
         "INFO",
-        `AI translating ${pending.length}/${sourceDocument.cues.length} cues in ${batches.length} batch(es) ` +
-          `of ${plan.size} via ${config.provider} ${config.model}`
+        `AI translating ${foregroundTotal}/${pending.length} pending (${sourceDocument.cues.length} total) cues in ${batches.length} batch(es) ` +
+          `of <=${plan.size} rows / ${config.maxBatchChars} chars via ${config.provider} ${config.model}`
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
@@ -1899,8 +1923,7 @@
       const aiRows = sourceDocument.cues
         .filter((cue) => known.has(String(cue.id)))
         .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
-      
-      // 关键防线：前台 8 秒截止时即使 0 行翻译完成，也绝不能抛错导致 YouTube App 超时报错；转入后台续翻并立刻放行原文字幕
+
       if (!aiRows.length) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {
