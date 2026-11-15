@@ -407,6 +407,79 @@ test("deadline returns finished AI rows, leaves the rest as source text, then re
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
+test("strictOrder hides out-of-order chunks after a missing batch while still caching them", async () => {
+  const store = new Map();
+  const result = await runLoon({
+    argument: {
+      ...config(),
+      parallel: "3",
+      batch_size: "6",
+      max_wait_ms: "3000",
+      timeout_ms: "3000",
+      strict_order: "true"
+    },
+    request: { url: processedUrl("json3", "ordered"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(18) },
+    store,
+    doneTimeoutMs: 4500,
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        // 第 0 批 (0..5) 和第 2 批 (12..17) 完成，中间第 1 批 (6..11) 超时未返
+        if (ids[0] === 0 || ids[0] === 12) {
+          callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+        }
+      }
+    }
+  });
+  const events = JSON.parse(result.doneValue.body).events.map((event) => event.segs[0].utf8);
+  assert.deepEqual(
+    events.slice(0, 6),
+    Array.from({ length: 6 }, (_, i) => `AI${i}\nLine ${i}`)
+  );
+  assert.deepEqual(
+    events.slice(12, 18),
+    Array.from({ length: 6 }, (_, i) => `Line ${i + 12}`),
+    "中间缺整批时，后面的零散块不跳跃显示"
+  );
+  const rows = storedRows(store);
+  assert.equal(rows["12"], "AI12", "但第 2 批已保存进缓存，不浪费额度");
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).ordered.remaining, 6);
+});
+
+test("retried batches jump back to the front of the queue in original order", async () => {
+  const order = [];
+  let failedOnce = false;
+  const result = await runLoon({
+    argument: {
+      ...config(),
+      parallel: "1",
+      batch_size: "5",
+      max_wait_ms: "3000",
+      timeout_ms: "3000"
+    },
+    request: { url: processedUrl("json3", "retryfront"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(15) },
+    store: new Map(),
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        order.push(ids[0]);
+        if (ids[0] === 0 && !failedOnce) {
+          failedOnce = true;
+          callback(null, { status: 500 }, "{}");
+          return;
+        }
+        callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+      }
+    }
+  });
+  assert.deepEqual(order, [0, 0, 5, 10], "第 0 批失败后应立刻优先重试，不能排到第 5/10 批之后");
+  assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai");
+});
+
 test("a batch that drops one line keeps the other AI rows", async () => {
   const result = await partialRun({
     store: new Map(),

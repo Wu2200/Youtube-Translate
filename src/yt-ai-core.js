@@ -23,13 +23,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    maxBatchItems: 30,
-    maxBatchChars: 2500,
+    maxBatchItems: 20,
+    maxBatchChars: 1500,
     foregroundMaxCues: 400,
-    concurrency: 6,
+    strictOrder: true,
+    concurrency: 3,
     retries: 0,
     timeoutMs: 8000,
-    maxWaitMs: 7000,
+    maxWaitMs: 7500,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -93,7 +94,7 @@
   }
 
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 30 : 25;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -166,6 +167,7 @@
       // 视频语言和「翻译成」相同（如看中文视频）时，改翻成这个语言
       secondaryLanguage: languageCode(raw.secondary_language || raw.secondaryLanguage || "English"),
       backgroundTranslate: toBoolean(raw.background_translate ?? raw.backgroundTranslate, true),
+      strictOrder: toBoolean(raw.strict_order ?? raw.strictOrder, DEFAULTS.strictOrder),
       showOnly: toBoolean(
         raw.show_only ?? raw.showOnly ?? raw.ShowOnly,
         DEFAULTS.showOnly
@@ -468,6 +470,32 @@
     const head = chunkCues(limitCues, firstItems, firstChars).slice(0, firstBatchCount);
     const consumed = head.reduce((sum, batch) => sum + batch.length, 0);
     return head.concat(chunkCues(limitCues.slice(consumed), maxItems, maxChars));
+  }
+
+  function selectOrderedRows(cues, known, strictOrder, gapLimit = 5) {
+    const read = (id) => (known instanceof Map ? known.get(String(id)) : known?.[String(id)]);
+    const all = [];
+    const prefix = [];
+    let consecutiveMissing = 0;
+    let stopped = false;
+    for (const cue of cues || []) {
+      const text = read(cue.id);
+      if (text) {
+        const row = { id: cue.id, text };
+        all.push(row);
+        if (!stopped) {
+          consecutiveMissing = 0;
+          prefix.push(row);
+        }
+      } else if (!stopped) {
+        consecutiveMissing += 1;
+        if (strictOrder && consecutiveMissing >= gapLimit) {
+          stopped = true;
+        }
+      }
+    }
+    if (!strictOrder) return all;
+    return prefix.length ? prefix : all;
   }
 
   function responseSchema() {
@@ -1141,6 +1169,7 @@
     extractSrv3Cues,
     chunkCues,
     chunkForegroundCues,
+    selectOrderedRows,
     responseSchema,
     buildPrompts,
     normalizeOpenAIEndpoint,

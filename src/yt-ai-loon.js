@@ -13,7 +13,7 @@
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
   const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 60;
+  const MAX_BATCH_ROWS = 40;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
@@ -276,8 +276,12 @@
     const failures = [];
     const samples = [];
     const inFlight = new Map();
-    const queue = batches.slice();
+    const queue = batches.map((batch, seq) => {
+      batch.seq = seq;
+      return batch;
+    });
     const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(5000, Math.round((expectedBatchMs || 0) * 0.5)));
+    const workerCount = Math.min(options?.concurrency || config.concurrency, Math.max(1, batches.length));
     let launched = 0;
     let retried = 0;
     let finished = false;
@@ -285,18 +289,33 @@
     function requeue(cues, parent, waitMs) {
       if ((parent.attempt || 0) >= MAX_BATCH_RETRIES || !cues.length) return;
       const retry = cues.slice();
+      retry.seq = parent.seq;
       retry.attempt = (parent.attempt || 0) + 1;
       retry.context = parent.context;
       retry.notBefore = Date.now() + (waitMs || 0);
       queue.push(retry);
+      queue.sort((a, b) => a.seq - b.seq);
       retried += 1;
+    }
+
+    function nextReadyIndex() {
+      const now = Date.now();
+      let headSeq = Infinity;
+      inFlight.forEach((_startedAt, item) => {
+        if (item.seq < headSeq) headSeq = item.seq;
+      });
+      queue.forEach((item) => {
+        if (item.seq < headSeq) headSeq = item.seq;
+      });
+      const maxSeq = headSeq + workerCount;
+      return queue.findIndex((item) => item.seq <= maxSeq && (!item.notBefore || item.notBefore <= now));
     }
 
     async function runWorker() {
       while (!finished) {
         if (options?.shouldStop?.()) return;
         if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
-        const index = queue.findIndex((item) => !item.notBefore || item.notBefore <= Date.now());
+        const index = nextReadyIndex();
         if (index < 0) {
           if (!queue.length && !inFlight.size) return;
           await delay(60);
@@ -332,7 +351,6 @@
         }
       }
     }
-    const workerCount = Math.min(options?.concurrency || config.concurrency, Math.max(1, batches.length));
     const workers = Promise.all(Array.from({ length: workerCount }, () => runWorker()));
     let timer;
     await Promise.race([
@@ -744,11 +762,8 @@
         if (stored) stored.forEach((text, id) => known.set(id, text));
       }
 
-      const aiRows = sourceDocument.cues
-        .filter((cue) => known.has(String(cue.id)))
-        .map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }));
-
-      if (!aiRows.length) {
+      const savedCount = sourceDocument.cues.filter((cue) => known.has(String(cue.id))).length;
+      if (!savedCount) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {
             key: rowsKey,
@@ -767,12 +782,15 @@
         return;
       }
 
-      const complete = aiRows.length === sourceDocument.cues.length;
+      const complete = savedCount === sourceDocument.cues.length;
+      const aiRows = complete
+        ? sourceDocument.cues.map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }))
+        : Core.selectOrderedRows(sourceDocument.cues, known, config.strictOrder);
       const aiBody = Core.renderSubtitleDocument(sourceDocument, aiRows, config);
       const percent = Math.floor((aiRows.length / sourceDocument.cues.length) * 100);
       log(
         "INFO",
-        `AI rows ${aiRows.length}/${sourceDocument.cues.length} (${percent}%), ` +
+        `AI rows ${aiRows.length}/${sourceDocument.cues.length} shown (${savedCount} saved, ${percent}%), ` +
           `new ${outcome.rows.length}, failed batches ${outcome.failures.length}, retried ${outcome.retried}, ` +
           `${Date.now() - scriptStartedAt}ms` +
           (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
@@ -785,7 +803,7 @@
           key: rowsKey,
           languages,
           cues: sourceDocument.cues.map(({ id, text }) => ({ id, text })),
-          remaining: sourceDocument.cues.length - aiRows.length,
+          remaining: sourceDocument.cues.length - savedCount,
           createdAt: Date.now()
         });
         notifyFallback(
