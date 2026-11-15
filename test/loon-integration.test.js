@@ -471,6 +471,40 @@ test("strictOrder uses small fast-start head batches and hides out-of-order chun
   assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).ordered.remaining, 18);
 });
 
+test("oversized batch that returns unusable output splits into two smaller batches and completes", async () => {
+  const requests = [];
+  const result = await runLoon({
+    argument: {
+      ...config(),
+      parallel: "1",
+      batch_size: "12",
+      max_wait_ms: "5000",
+      timeout_ms: "5000"
+    },
+    request: { url: processedUrl("json3", "splitretry"), method: "GET", headers: {} },
+    response: { status: 200, headers: { "Content-Type": "application/json" }, body: manyCueJson3(12) },
+    store: new Map(),
+    doneTimeoutMs: 4500,
+    httpClient: {
+      get: noGet,
+      post(request, callback) {
+        const ids = requestedIds(request);
+        requests.push(ids);
+        if (ids.length === 12) {
+          callback(null, { status: 200 }, JSON.stringify({ candidates: [{ content: { parts: [{ text: "抱歉，内容过长无法处理" }] } }] }));
+          return;
+        }
+        callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
+      }
+    }
+  });
+  assert.equal(requests.length, 3);
+  assert.equal(requests[0].length, 12);
+  assert.deepEqual(requests[1], [0, 1, 2, 3, 4, 5]);
+  assert.deepEqual(requests[2], [6, 7, 8, 9, 10, 11]);
+  assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai");
+});
+
 test("disabling strictOrder removes window restrictions and renders all finished chunks", async () => {
   const store = new Map();
   const result = await runLoon({

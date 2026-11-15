@@ -472,7 +472,7 @@
     return head.concat(chunkCues(limitCues.slice(consumed), maxItems, maxChars));
   }
 
-  function selectOrderedRows(cues, known, strictOrder, gapLimit = 5) {
+  function selectOrderedRows(cues, known, strictOrder, gapLimit = 3) {
     const read = (id) => (known instanceof Map ? known.get(String(id)) : known?.[String(id)]);
     const all = [];
     const prefix = [];
@@ -815,28 +815,36 @@
     });
   }
 
-  // 大幅放宽限制：按 ID 匹配优先；若第三方模型从 1..N 重新编号导致 ID 错位，按顺序对齐挽救
   function salvageTranslations(payload, batch) {
     const rows = Array.isArray(payload)
       ? payload
       : payload?.translations || payload?.data || payload?.items;
     if (!Array.isArray(rows)) throw new Error("Translation payload is not an array");
+    const batchIds = new Set(batch.map((cue) => String(cue.id)));
     const byId = new Map();
     const duplicated = new Set();
+    let matchedCount = 0;
     rows.forEach((row) => {
       const id = String(row?.id);
+      if (batchIds.has(id)) matchedCount += 1;
       if (byId.has(id)) duplicated.add(id);
       byId.set(id, row);
     });
+    const looksRenumbered =
+      rows.length > 0 &&
+      !batchIds.has(String(rows[0]?.id)) &&
+      matchedCount < rows.length * 0.5 &&
+      Number(rows[0]?.id) <= 1;
     const result = [];
-    batch.forEach((cue) => {
-      const id = String(cue.id);
-      if (duplicated.has(id)) return;
-      const text = cleanCueText(byId.get(id)?.text);
-      if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
-      result.push({ id: cue.id, text });
-    });
-    // 如果直接 ID 匹配失败（模型自作主张重新编号），按行序号按序映射挽救
+    if (!looksRenumbered) {
+      batch.forEach((cue) => {
+        const id = String(cue.id);
+        if (duplicated.has(id)) return;
+        const text = cleanCueText(byId.get(id)?.text);
+        if (!text || text.length > Math.max(240, cue.text.length * 8)) return;
+        result.push({ id: cue.id, text });
+      });
+    }
     if (!result.length && rows.length > 0) {
       batch.forEach((cue, index) => {
         if (!rows[index]) return;

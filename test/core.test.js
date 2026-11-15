@@ -191,6 +191,15 @@ test("parses flexible separators, markdown, and thinking tags with sequential fa
     { id: 101, text: "乙" },
     { id: 102, text: "丙" }
   ]);
+
+  const overlappingBatch = Array.from({ length: 10 }, (_, idx) => ({ id: 6 + idx, text: `Line ${idx}` }));
+  const renumbered = Array.from({ length: 10 }, (_, idx) => ({ id: idx + 1, text: `译文${idx}` }));
+  const salvagedOverlap = Core.salvageTranslations({ translations: renumbered }, overlappingBatch);
+  assert.deepEqual(
+    salvagedOverlap,
+    overlappingBatch.map((cue, idx) => ({ id: cue.id, text: `译文${idx}` })),
+    "模型从 1..N 重新编号且与批次 ID 部分重叠时，应按顺序对齐而非错位匹配"
+  );
 });
 
 test("builds OpenAI-compatible request with JSON mode and header-only key", () => {
