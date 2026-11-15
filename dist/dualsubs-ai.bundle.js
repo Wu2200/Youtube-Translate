@@ -27,14 +27,14 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    maxBatchItems: 20,
-    maxBatchChars: 1500,
-    foregroundMaxCues: 400,
+    maxBatchItems: 30,
+    maxBatchChars: 3500,
+    foregroundMaxCues: 500,
     strictOrder: true,
-    concurrency: 3,
+    concurrency: 5,
     retries: 0,
     timeoutMs: 8000,
-    maxWaitMs: 7500,
+    maxWaitMs: 7000,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -98,7 +98,7 @@
   }
 
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 35 : 25;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -465,7 +465,7 @@
   function chunkForegroundCues(cues, maxItems, maxChars, options) {
     const limitCues = Number(options?.maxCues) > 0 ? cues.slice(0, options.maxCues) : cues.slice();
     if (!limitCues.length) return [];
-    if (!options?.fastStart || limitCues.length <= 24) {
+    if (!options?.fastStart || limitCues.length <= 30) {
       return chunkCues(limitCues, maxItems, maxChars);
     }
     const firstItems = Math.min(maxItems, Number(options.firstBatchItems) || 12);
@@ -498,8 +498,7 @@
         }
       }
     }
-    if (!strictOrder) return all;
-    return prefix.length ? prefix : all;
+    return strictOrder ? prefix : all;
   }
 
   function responseSchema() {
@@ -1399,7 +1398,9 @@
     if (remaining <= 700) {
       throw new Error("AI translation exceeded the subtitle deadline");
     }
-    const cap = isBackgroundPing ? BACKGROUND_REQUEST_TIMEOUT_MS : config.timeoutMs;
+    const cap = isBackgroundPing
+      ? BACKGROUND_REQUEST_TIMEOUT_MS
+      : Math.max(config.timeoutMs, config.maxWaitMs);
     return Object.assign({}, config, {
       timeoutMs: Math.max(MIN_MODEL_REQUEST_TIMEOUT_MS, Math.min(cap, remaining - 350))
     });
@@ -1488,6 +1489,7 @@
     });
     const launchThreshold = Math.max(MIN_LAUNCH_MS, Math.min(5000, Math.round((expectedBatchMs || 0) * 0.5)));
     const workerCount = Math.min(options?.concurrency || config.concurrency, Math.max(1, batches.length));
+    const orderedMode = options?.strictOrder !== false;
     let launched = 0;
     let retried = 0;
     let finished = false;
@@ -1506,6 +1508,9 @@
 
     function nextReadyIndex() {
       const now = Date.now();
+      if (!orderedMode) {
+        return queue.findIndex((item) => !item.notBefore || item.notBefore <= now);
+      }
       let headSeq = Infinity;
       inFlight.forEach((_startedAt, item) => {
         if (item.seq < headSeq) headSeq = item.seq;
@@ -1513,21 +1518,35 @@
       queue.forEach((item) => {
         if (item.seq < headSeq) headSeq = item.seq;
       });
-      const maxSeq = headSeq + workerCount;
-      return queue.findIndex((item) => item.seq <= maxSeq && (!item.notBefore || item.notBefore <= now));
+      const tailWindow = remainingTime() <= 2200 ? 2 : Math.max(workerCount * 2, 4);
+      const maxSeq = headSeq + tailWindow;
+      return queue.findIndex((item) => {
+        if (item.notBefore && item.notBefore > now) return false;
+        if ((item.attempt || 0) > 0 && item.seq <= headSeq + workerCount) return true;
+        return item.seq <= maxSeq;
+      });
+    }
+
+    function canLaunch(batch) {
+      const rem = remainingTime();
+      if (launched === 0) return rem >= MIN_LAUNCH_MS;
+      if ((batch.attempt || 0) > 0 && batch.length <= 10) return rem >= 900;
+      return rem >= launchThreshold;
     }
 
     async function runWorker() {
       while (!finished) {
         if (options?.shouldStop?.()) return;
-        if (launched === 0 ? remainingTime() < MIN_LAUNCH_MS : remainingTime() < launchThreshold) return;
         const index = nextReadyIndex();
         if (index < 0) {
           if (!queue.length && !inFlight.size) return;
+          if (launched > 0 && remainingTime() < 900) return;
           await delay(60);
           continue;
         }
-        const batch = queue.splice(index, 1)[0];
+        const batch = queue[index];
+        if (!canLaunch(batch)) return;
+        queue.splice(index, 1);
         launched += 1;
         const startedAt = Date.now();
         inFlight.set(batch, startedAt);
@@ -1787,6 +1806,7 @@
         const startedAt = Date.now();
         const outcome = await translateWithinDeadline(batches, job.languages, plan.expectedMs, {
           concurrency: BACKGROUND_CONCURRENCY,
+          strictOrder: false,
           shouldStop: () => {
             const latest = Number($persistentStore.read(FOREGROUND_KEY) || 0);
             if (latest > startedAt) {
@@ -1934,7 +1954,7 @@
       const batches = attachContext(
         Core.chunkForegroundCues(pending, plan.size, config.maxBatchChars, {
           maxCues: config.foregroundMaxCues,
-          fastStart: config.adaptiveBatch,
+          fastStart: config.strictOrder || config.adaptiveBatch,
           firstBatchItems: 12,
           firstBatchChars: 1000,
           firstBatchCount: 2
@@ -1947,10 +1967,11 @@
       log(
         "INFO",
         `AI translating ${foregroundTotal}/${pending.length} pending (${sourceDocument.cues.length} total) cues in ${batches.length} batch(es) ` +
-          `of <=${plan.size} rows / ${config.maxBatchChars} chars, parallel=${config.concurrency}, wait=${config.maxWaitMs}ms via ${config.provider} ${config.model}`
+          `of <=${plan.size} rows / ${config.maxBatchChars} chars, parallel=${config.concurrency}, wait=${config.maxWaitMs}ms, strict=${config.strictOrder} via ${config.provider} ${config.model}`
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
+            strictOrder: config.strictOrder,
             shouldStop: () => {
               const latest = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
               if (latest > scriptStartedAt) {
@@ -1969,13 +1990,17 @@
       }
 
       const savedCount = sourceDocument.cues.filter((cue) => known.has(String(cue.id))).length;
-      if (!savedCount) {
+      const orderedRows = savedCount === sourceDocument.cues.length
+        ? sourceDocument.cues.map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }))
+        : Core.selectOrderedRows(sourceDocument.cues, known, config.strictOrder);
+
+      if (!orderedRows.length) {
         if (config.backgroundTranslate) {
           saveJob(videoId, {
             key: rowsKey,
             languages,
             cues: sourceDocument.cues.map(({ id, text }) => ({ id, text })),
-            remaining: sourceDocument.cues.length,
+            remaining: sourceDocument.cues.length - savedCount,
             createdAt: Date.now()
           });
         }
@@ -1989,14 +2014,11 @@
       }
 
       const complete = savedCount === sourceDocument.cues.length;
-      const aiRows = complete
-        ? sourceDocument.cues.map((cue) => ({ id: cue.id, text: known.get(String(cue.id)) }))
-        : Core.selectOrderedRows(sourceDocument.cues, known, config.strictOrder);
-      const aiBody = Core.renderSubtitleDocument(sourceDocument, aiRows, config);
-      const percent = Math.floor((aiRows.length / sourceDocument.cues.length) * 100);
+      const aiBody = Core.renderSubtitleDocument(sourceDocument, orderedRows, config);
+      const percent = Math.floor((orderedRows.length / sourceDocument.cues.length) * 100);
       log(
         "INFO",
-        `AI rows ${aiRows.length}/${sourceDocument.cues.length} shown (${savedCount} saved, ${percent}%), ` +
+        `AI rows ${orderedRows.length}/${sourceDocument.cues.length} shown (${savedCount} saved, ${percent}%), ` +
           `new ${outcome.rows.length}, failed batches ${outcome.failures.length}, retried ${outcome.retried}, ` +
           `${Date.now() - scriptStartedAt}ms` +
           (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
