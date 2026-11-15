@@ -27,13 +27,13 @@
     showOnly: false,
     position: "TranslationFirst",
     customPrompt: "",
-    maxBatchItems: 20,
-    maxBatchChars: 1800,
-    foregroundMaxCues: 260,
-    concurrency: 4,
+    maxBatchItems: 30,
+    maxBatchChars: 2500,
+    foregroundMaxCues: 400,
+    concurrency: 6,
     retries: 0,
     timeoutMs: 8000,
-    maxWaitMs: 6000,
+    maxWaitMs: 7000,
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
@@ -97,7 +97,7 @@
   }
 
   function initialBatchSize(model) {
-    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 25 : 20;
+    return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 30 : 25;
   }
 
   // 插件里用中文显示语言名，这里换回语言代码
@@ -126,6 +126,12 @@
       : providerForModel(model) || (providerRaw && !providerRaw.includes("gemini") ? "OpenAI-Compatible" : "Gemini");
     const keyField = PROVIDERS[provider]?.keyField || "api_key";
     const configuredBatch = raw.batch_size ?? raw.max_batch_items ?? raw.maxBatchItems;
+    const configuredBatchInt = Number.parseInt(configuredBatch, 10);
+    const adaptiveBatch =
+      configuredBatch === undefined ||
+      configuredBatch === null ||
+      String(configuredBatch).trim() === "" ||
+      configuredBatchInt === 0;
     const positionRaw = String(raw.position || raw.Position || DEFAULTS.position).toLowerCase();
     const position =
       positionRaw.includes("source") || positionRaw === "forward" || positionRaw.includes("原文在上")
@@ -149,8 +155,7 @@
       model,
       baseUrl: PROVIDERS[provider]?.baseUrl ||
         String(raw.base_url || raw.baseUrl || raw.BaseURL || DEFAULTS.baseUrl).trim(),
-      // 插件没传批大小时按模型实测速度自动调整
-      adaptiveBatch: configuredBatch === undefined || configuredBatch === "",
+      adaptiveBatch,
       geminiBaseUrl: String(
         raw.gemini_base_url || raw.geminiBaseUrl || DEFAULTS.geminiBaseUrl
       ).trim(),
@@ -171,12 +176,9 @@
       ),
       position,
       customPrompt: String(raw.custom_prompt || raw.customPrompt || DEFAULTS.customPrompt).trim(),
-      maxBatchItems: clampInteger(
-        configuredBatch,
-        configuredBatch === undefined || configuredBatch === "" ? initialBatchSize(model) : DEFAULTS.maxBatchItems,
-        5,
-        500
-      ),
+      maxBatchItems: adaptiveBatch
+        ? initialBatchSize(model)
+        : clampInteger(configuredBatch, DEFAULTS.maxBatchItems, 5, 200),
       maxBatchChars: clampInteger(
         raw.batch_chars ?? raw.max_batch_chars ?? raw.maxBatchChars,
         DEFAULTS.maxBatchChars,
@@ -186,8 +188,8 @@
       foregroundMaxCues: clampInteger(
         raw.foreground_max_cues ?? raw.foregroundMaxCues,
         DEFAULTS.foregroundMaxCues,
-        20,
-        1000
+        0,
+        5000
       ),
       concurrency: clampInteger(raw.parallel ?? raw.concurrency, DEFAULTS.concurrency, 1, 16),
       retries: clampInteger(raw.retries, DEFAULTS.retries, 0, 4),
@@ -1182,17 +1184,16 @@
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
   const ROWS_VIDEO_LIMIT = 20;
-  const MIN_LAUNCH_MS = 1500;
+  const MIN_LAUNCH_MS = 1200;
   const RENDER_RESERVE_MS = 250;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
   const SPEED_KEY = "@DualSubs-AI.ModelSpeed.v1";
   const TARGET_BATCH_MS = 2500;
   const MIN_BATCH_ROWS = 8;
-  const MAX_BATCH_ROWS = 30;
+  const MAX_BATCH_ROWS = 60;
   const CONTEXT_ROWS = 2;
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
-  const CLIENT_SAFE_MAX_WAIT_MS = 6000;
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
   const config = Core.normalizeConfig(
     typeof $argument === "undefined" ? {} : $argument
@@ -1860,7 +1861,7 @@
       donePassthrough("source-only");
       return;
     }
-    executionDeadline = Date.now() + Math.min(config.maxWaitMs, CLIENT_SAFE_MAX_WAIT_MS);
+    executionDeadline = Date.now() + config.maxWaitMs;
     if (config.sentenceSplit) {
       const originalCount = sourceDocument.cues.length;
       sourceDocument = Core.resegmentDocument(sourceDocument);
@@ -1899,7 +1900,7 @@
       log(
         "INFO",
         `AI translating ${foregroundTotal}/${pending.length} pending (${sourceDocument.cues.length} total) cues in ${batches.length} batch(es) ` +
-          `of <=${plan.size} rows / ${config.maxBatchChars} chars via ${config.provider} ${config.model}`
+          `of <=${plan.size} rows / ${config.maxBatchChars} chars, parallel=${config.concurrency}, wait=${config.maxWaitMs}ms via ${config.provider} ${config.model}`
       );
       const outcome = batches.length
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
