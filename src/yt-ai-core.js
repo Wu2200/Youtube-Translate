@@ -830,11 +830,19 @@
       if (byId.has(id)) duplicated.add(id);
       byId.set(id, row);
     });
-    const looksRenumbered =
-      rows.length > 0 &&
+    const firstId = Number(rows[0]?.id);
+    const sequentialRenumbered =
+      rows.length >= 2 &&
+      Number.isInteger(firstId) &&
+      (firstId === 0 || firstId === 1) &&
       !batchIds.has(String(rows[0]?.id)) &&
-      matchedCount < rows.length * 0.5 &&
-      Number(rows[0]?.id) <= 1;
+      rows.every((row, index) => Number(row?.id) === firstId + index);
+    const looksRenumbered =
+      sequentialRenumbered ||
+      (rows.length > 0 &&
+        !batchIds.has(String(rows[0]?.id)) &&
+        matchedCount <= rows.length * 0.5 &&
+        firstId <= 1);
     const result = [];
     if (!looksRenumbered) {
       batch.forEach((cue) => {
