@@ -16,7 +16,7 @@
 
   const DEFAULTS = Object.freeze({
     provider: "Gemini",
-    aiEnabled: false,
+    aiEnabled: true,
     apiKey: "",
     model: "gemini-3.5-flash-lite",
     baseUrl: "https://api.openai.com/v1",
@@ -24,7 +24,7 @@
     targetLanguage: "zh-Hans",
     secondaryLanguage: "zh-Hans",
     autoTranslate: true,
-    showOnly: false,
+    showOnly: true,
     position: "TranslationFirst",
     customPrompt: "",
     maxBatchItems: 30,
