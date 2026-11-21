@@ -6,11 +6,13 @@
   const NOTICE_KEY = "@DualSubs-AI.Notices.v2";
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
+  const ROWS_META_KEY = "@DualSubs-AI.RowsMeta.v1";
   const CONFIG_OVERRIDE_KEY = "yt_ai_config";
   const QUICK_URL_KEY = "yt_ai_url";
   const QUICK_MODEL_KEY = "yt_ai_model";
   const QUICK_KEY_KEY = "yt_ai_key";
-  const ROWS_VIDEO_LIMIT = 20;
+  const ROWS_VIDEO_LIMIT = 5;
+  const CACHE_TTL_MS = 12 * 3600 * 1000;
   const MIN_LAUNCH_MS = 1200;
   const RENDER_RESERVE_MS = 250;
   const THINKING_KEY = "@DualSubs-AI.ThinkingLevel.v1";
@@ -598,6 +600,18 @@
   function readRows(key) {
     if (config.cacheEntries <= 0 || !hasStore()) return new Map();
     try {
+      const meta = readJsonStore(ROWS_META_KEY, {});
+      const updatedAt = Number(meta[key] || 0);
+      if (updatedAt > 0 && Date.now() - updatedAt > CACHE_TTL_MS) {
+        storeWrite("", ROWS_PREFIX + key);
+        delete meta[key];
+        writeJsonStore(ROWS_META_KEY, meta);
+        const index = readJsonStore(ROWS_INDEX_KEY, []);
+        if (Array.isArray(index)) {
+          writeJsonStore(ROWS_INDEX_KEY, index.filter((item) => item !== key));
+        }
+        return new Map();
+      }
       const parsed = JSON.parse(storeRead(ROWS_PREFIX + key) || "{}");
       return new Map(Object.entries(parsed && typeof parsed === "object" ? parsed : {}));
     } catch (_) {
@@ -621,12 +635,16 @@
       const index = readJsonStore(ROWS_INDEX_KEY, []);
       const list = (Array.isArray(index) ? index : []).filter((item) => item !== key);
       list.unshift(key);
+      const meta = readJsonStore(ROWS_META_KEY, {});
+      meta[key] = Date.now();
       list.slice(ROWS_VIDEO_LIMIT).forEach((old) => {
+        delete meta[old];
         try {
           storeWrite("", ROWS_PREFIX + old);
         } catch (_) {
         }
       });
+      writeJsonStore(ROWS_META_KEY, meta);
       writeJsonStore(ROWS_INDEX_KEY, list.slice(0, ROWS_VIDEO_LIMIT));
       return stored;
     } catch (error) {
@@ -978,7 +996,7 @@
           (outcome.failures.length ? `, first failure: ${safeError(outcome.failures[0])}` : "")
       );
       if (complete) {
-        writeCache(responseCacheKey, { body: aiBody, contentType, result: "ai" }, 86400000);
+        writeCache(responseCacheKey, { body: aiBody, contentType, result: "ai" }, CACHE_TTL_MS);
         removeJob(videoId);
       } else {
         const background = config.backgroundTranslate && saveJob(videoId, {

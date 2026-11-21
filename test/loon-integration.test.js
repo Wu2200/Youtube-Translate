@@ -183,7 +183,7 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   const store = new Map([
     [
       "yt_ai_config",
-      "url=https://qx.example.com/v1\nmodel=gpt-4o-mini\nkey=qx-secret\nwait=6500\nbatch=20\nconcurrency=3\nPosition=原文在上"
+      "url=https://qx.example.com/v1\nmodel=gpt-4o-mini\nkey=qx-secret\nwait=6500\nbatch=20\nconcurrency=3\nPosition=原文在上\nai_enabled=true"
     ]
   ]);
   const reqResult = await runQX({
@@ -242,6 +242,7 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   let quickReq;
   const quickResp = await runQX({
     store: quickStore,
+    argument: "ai_enabled=true",
     request: {
       url: "https://www.youtube.com/api/timedtext?v=qx2&lang=en&fmt=json3",
       method: "GET",
@@ -289,6 +290,7 @@ test("Quantumult X background ping finishes remaining rows via $prefs and $notif
   ]);
   const ping = await runQX({
     store,
+    argument: "ai_enabled=true",
     request: { url: pingUrl("qxbg"), method: "POST", headers: {} },
     fetch() {
       return Promise.resolve({
@@ -496,11 +498,14 @@ test("OpenAI-compatible adapter retries once without extra parameters", async ()
   assert.equal(JSON.parse(result.doneValue.body).events[0].segs[0].utf8, "AI你好\nHello");
 });
 
-test("second identical response uses final cache without network calls", async () => {
+test("second identical response uses final cache without network calls and expires after 12 hours", async () => {
   const store = new Map();
   let postCalls = 0;
+  let fakeNow = 1_700_000_000_000;
+  const FakeDate = { now: () => fakeNow };
   const shared = {
     argument: config(),
+    Date: FakeDate,
     request: { url: processedUrl("json3", "cache"), method: "GET", headers: {} },
     response: { status: 200, headers: { "Content-Type": "application/json" }, body: sourceJson3() },
     store,
@@ -513,10 +518,18 @@ test("second identical response uses final cache without network calls", async (
     }
   };
   await runLoon(shared);
+  const cacheEntry = JSON.parse(store.get("@DualSubs-AI.Cache.v1")).entries[0];
+  assert.equal(cacheEntry.expiresAt - cacheEntry.createdAt, 12 * 3600 * 1000);
+
   const second = await runLoon(shared);
   assert.equal(postCalls, 1);
   assert.equal(JSON.parse(second.doneValue.body).events[1].segs[0].utf8, "AI世界\nWorld");
   assert.equal(second.doneValue.headers["x-dualsubs-ai-result"], "cache-ai");
+
+  fakeNow += 12 * 3600 * 1000 + 1;
+  const expired = await runLoon(shared);
+  assert.equal(postCalls, 2, "超过 12 小时后缓存和行缓存均应失效并重新翻译");
+  assert.equal(expired.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
 function tenCueJson3(prefix) {
@@ -1440,9 +1453,9 @@ test("switching to another video stops the previous video from sending new batch
   assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai-partial");
 });
 
-test("translated rows are kept for the 20 most recent videos", async () => {
+test("translated rows are kept for the 5 most recent videos", async () => {
   const store = new Map();
-  for (let index = 0; index < 22; index += 1) {
+  for (let index = 0; index < 7; index += 1) {
     await runLoon({
       argument: config(),
       request: { url: processedUrl("json3", `video${index}`), method: "GET", headers: {} },
@@ -1462,8 +1475,8 @@ test("translated rows are kept for the 20 most recent videos", async () => {
     });
   }
   const kept = [...store.entries()].filter(([key, value]) => key.startsWith("@DualSubs-AI.Rows.v2:") && value);
-  assert.equal(kept.length, 20, "保留最近 20 个视频");
-  assert.equal(JSON.parse(store.get("@DualSubs-AI.RowsIndex.v2")).length, 20);
+  assert.equal(kept.length, 5, "最多保留最近 5 个视频");
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.RowsIndex.v2")).length, 5);
 });
 
 test("a Chinese video gets Chinese on top and the English translation below", async () => {
@@ -1475,13 +1488,13 @@ test("a Chinese video gets Chinese on top and the English translation below", as
     ]
   });
   const request = await runLoon({
-    argument: { ...config(), Position: "原文在上" },
+    argument: { ...config(), Position: "原文在上", secondary_language: "English" },
     request: { url: "https://www.youtube.com/api/timedtext?v=zhvideo&lang=zh-Hans&fmt=json3", method: "GET", headers: {} }
   });
   const rewritten = request.doneValue.url;
   assert.equal(new URL(rewritten).searchParams.get("dsai_target"), "en");
   const result = await runLoon({
-    argument: { ...config(), Position: "原文在上" },
+    argument: { ...config(), Position: "原文在上", secondary_language: "English" },
     request: { url: rewritten, method: "GET", headers: {} },
     response: { status: 200, headers: { "Content-Type": "application/json" }, body },
     httpClient: {
