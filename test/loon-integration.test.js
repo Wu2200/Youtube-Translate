@@ -131,7 +131,8 @@ function config(provider = "Gemini") {
     thinking_level: "minimal",
     cache_entries: "3",
     LogLevel: "OFF",
-    Position: "Reverse"
+    Position: "Reverse",
+    ShowOnly: false
   };
 }
 
@@ -183,7 +184,7 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   const store = new Map([
     [
       "yt_ai_config",
-      "url=https://qx.example.com/v1\nmodel=gpt-4o-mini\nkey=qx-secret\nwait=6500\nbatch=20\nconcurrency=3\nPosition=原文在上\nai_enabled=true"
+      "url=https://qx.example.com/v1\nmodel=gpt-4o-mini\nkey=qx-secret\nwait=6500\nbatch=20\nconcurrency=3\nPosition=原文在上\nShowOnly=false"
     ]
   ]);
   const reqResult = await runQX({
@@ -242,7 +243,6 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   let quickReq;
   const quickResp = await runQX({
     store: quickStore,
-    argument: "ai_enabled=true",
     request: {
       url: "https://www.youtube.com/api/timedtext?v=qx2&lang=en&fmt=json3",
       method: "GET",
@@ -267,7 +267,7 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   assert.equal(quickReq.url, "https://quick.example.com/v1/chat/completions");
   assert.equal(quickReq.headers.Authorization, "Bearer quick-key");
   assert.equal(JSON.parse(quickReq.body).model, "deepseek-chat");
-  assert.equal(JSON.parse(quickResp.doneValue.body).events[0].segs[0].utf8, "快捷你好\nHello");
+  assert.equal(JSON.parse(quickResp.doneValue.body).events[0].segs[0].utf8, "快捷你好", "默认只显示译文，不显示双语");
 });
 
 test("Quantumult X background ping finishes remaining rows via $prefs and $notify", async () => {
@@ -290,7 +290,6 @@ test("Quantumult X background ping finishes remaining rows via $prefs and $notif
   ]);
   const ping = await runQX({
     store,
-    argument: "ai_enabled=true",
     request: { url: pingUrl("qxbg"), method: "POST", headers: {} },
     fetch() {
       return Promise.resolve({

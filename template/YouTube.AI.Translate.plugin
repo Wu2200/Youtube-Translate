@@ -9,7 +9,7 @@
 #!version = 0.0.0
 
 [Argument]
-ai_enabled = switch,false,tag=AI 翻译,desc=关闭后不做翻译，只显示 YouTube 原文字幕
+ai_enabled = switch,true,tag=AI 翻译,desc=关闭后不做翻译，只显示 YouTube 原文字幕
 provider = select,"OpenAI-Compatible",tag=接口协议,desc=使用支持 OpenAI Chat Completions 的接口
 model = input,"gpt-4o-mini",tag=模型,desc=填写自定义接口支持的模型名称
 base_url = input,"https://api.openai.com/v1",tag=API 地址,desc=填写兼容接口基础地址
@@ -17,7 +17,7 @@ api_key = input,"",tag=API Key,desc=填写自定义接口提供的密钥
 target_language = select,"简体中文","繁體中文","日本語","한국어","English",tag=翻译成,desc=如果在 YouTube 字幕菜单里选了自动翻译成某种语言，以菜单为准
 secondary_language = select,"简体中文","English","繁體中文","日本語","한국어",tag=同语言视频翻译成,desc=视频本身就是翻译目标语言时，改翻成这个语言
 Position = select,"原文在上","译文在上",tag=字幕顺序,desc=每种语言各占一行
-ShowOnly = switch,false,tag=只显示译文,desc=开启后不显示原文
+ShowOnly = switch,true,tag=只显示译文,desc=开启后不显示原文
 background_translate = switch,true,tag=播放时后台续翻,desc=长视频第一次没翻完时，看视频期间借 YouTube 的观看统计请求在后台接着翻，翻完会通知；之后重新打开视频即可看到完整双语字幕。中途不看的视频也可能被翻完，会多用一些 API 额度
 sentence_split = switch,true,tag=按句断句,desc=自动字幕常把上一句结尾和下一句开头放在同一条里。开启后按句子重新分条，原文和译文都更通顺；没有标点的字幕保持原样。显示时间按语速估算，如有异常可关闭
 strict_order = switch,true,tag=顺序防跳段,desc=开启后前两批小包护航，且只显示从开头连续翻完的字幕，最后窗口优先填补前序缺口；后续已翻批次仍会保存缓存
