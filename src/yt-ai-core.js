@@ -7,7 +7,6 @@
 
   const VERSION = "0.10.0";
   const QUERY_FLAG = "dsai";
-  // 不能用 "tlang"：2026-10 起 YouTube 对带 tlang 的 timedtext 请求一律返回 429。
   const QUERY_TARGET = "dsai_target";
   const CACHE_VERSION = "v4";
 
@@ -39,6 +38,125 @@
     logLevel: "INFO"
   });
 
+  const CONFIG_ALIASES = Object.freeze({
+    url: "base_url",
+    key: "api_key",
+    wait: "max_wait_ms",
+    batch: "max_batch_items",
+    batch_size: "max_batch_items",
+    chars: "max_batch_chars",
+    batch_chars: "max_batch_chars",
+    max_cues: "foreground_max_cues",
+    parallel: "concurrency",
+    lang: "target_language",
+    lang2: "secondary_language",
+    order: "strict_order",
+    bg: "background_translate",
+    split: "sentence_split",
+    prompt: "custom_prompt",
+    log: "log_level",
+    LogLevel: "log_level",
+    Position: "position",
+    ShowOnly: "show_only"
+  });
+
+  function createFallbackUrl(input) {
+    const raw = String(input || "");
+    const match = raw.match(/^([a-zA-Z][a-zA-Z0-9+.-]*:)\/\/([^/?#]*)([^?#]*)(\?[^#]*)?(#.*)?$/);
+    if (!match) throw new TypeError(`Invalid URL: ${raw}`);
+    const protocol = match[1].toLowerCase();
+    const host = match[2];
+    const pathname = match[3] || "/";
+    const hash = match[5] || "";
+    const entries = [];
+    const rawQuery = (match[4] || "").slice(1);
+    if (rawQuery) {
+      rawQuery.split("&").forEach((pair) => {
+        if (!pair) return;
+        const eq = pair.indexOf("=");
+        const rawKey = eq >= 0 ? pair.slice(0, eq) : pair;
+        const rawVal = eq >= 0 ? pair.slice(eq + 1) : "";
+        let key = rawKey;
+        let val = rawVal;
+        try {
+          key = decodeURIComponent(rawKey.replace(/\+/g, " "));
+        } catch (_) {}
+        try {
+          val = decodeURIComponent(rawVal.replace(/\+/g, " "));
+        } catch (_) {}
+        entries.push([key, val]);
+      });
+    }
+    const searchParams = {
+      get(name) {
+        const found = entries.find((item) => item[0] === name);
+        return found ? found[1] : null;
+      },
+      has(name) {
+        return entries.some((item) => item[0] === name);
+      },
+      set(name, value) {
+        const str = String(value);
+        let replaced = false;
+        for (let i = 0; i < entries.length; i += 1) {
+          if (entries[i][0] === name) {
+            if (!replaced) {
+              entries[i][1] = str;
+              replaced = true;
+            } else {
+              entries.splice(i, 1);
+              i -= 1;
+            }
+          }
+        }
+        if (!replaced) entries.push([name, str]);
+      },
+      delete(name) {
+        for (let i = entries.length - 1; i >= 0; i -= 1) {
+          if (entries[i][0] === name) entries.splice(i, 1);
+        }
+      },
+      toString() {
+        return entries
+          .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`)
+          .join("&");
+      }
+    };
+    return {
+      protocol,
+      host,
+      pathname,
+      hash,
+      searchParams,
+      get search() {
+        const q = searchParams.toString();
+        return q ? `?${q}` : "";
+      },
+      toString() {
+        const q = searchParams.toString();
+        return `${protocol}//${host}${pathname}${q ? `?${q}` : ""}${hash}`;
+      }
+    };
+  }
+
+  function parseUrl(input) {
+    if (typeof URL === "function") return new URL(input);
+    return createFallbackUrl(input);
+  }
+
+  function urlPath(input) {
+    const parsed = parseUrl(input);
+    return `${parsed.pathname}${parsed.search || ""}`;
+  }
+
+  function isTimedTextUrl(inputUrl) {
+    try {
+      return parseUrl(inputUrl).pathname === "/api/timedtext";
+    } catch (_) {
+      return false;
+    }
+  }
+
   function clampInteger(value, fallback, min, max) {
     const parsed = Number.parseInt(value, 10);
     if (!Number.isFinite(parsed)) return fallback;
@@ -55,28 +173,117 @@
     return fallback;
   }
 
-  function parseArgumentString(value) {
+  function unquoteValue(value) {
+    const trimmed = String(value || "").trim();
+    if (
+      (trimmed.startsWith("\"") && trimmed.endsWith("\"") && trimmed.length >= 2) ||
+      (trimmed.startsWith("'") && trimmed.endsWith("'") && trimmed.length >= 2)
+    ) {
+      return trimmed.slice(1, -1).trim();
+    }
+    return trimmed;
+  }
+
+  function stripPlaceholders(obj) {
+    const cleaned = {};
+    if (!obj || typeof obj !== "object" || Array.isArray(obj)) return cleaned;
+    Object.keys(obj).forEach((key) => {
+      const value = obj[key];
+      if (typeof value === "string" && /^\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value.trim())) {
+        return;
+      }
+      cleaned[key] = value;
+    });
+    return cleaned;
+  }
+
+  function parseConfigText(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) {
+      return stripPlaceholders(value);
+    }
     const trimmed = String(value || "").trim();
     if (!trimmed) return {};
     if (trimmed.startsWith("{")) {
       try {
-        return JSON.parse(trimmed);
+        const parsed = JSON.parse(trimmed);
+        return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+          ? stripPlaceholders(parsed)
+          : {};
       } catch (_) {
-        return {};
+        try {
+          const parsed = JSON.parse(trimmed.replace(/[\u201c\u201d]/g, "\""));
+          return parsed && typeof parsed === "object" && !Array.isArray(parsed)
+            ? stripPlaceholders(parsed)
+            : {};
+        } catch (_) {
+          return {};
+        }
       }
+    }
+    if (/[\r\n]/.test(trimmed)) {
+      const result = {};
+      trimmed.split(/\r?\n/).forEach((rawLine) => {
+        const line = rawLine.trim();
+        if (!line || line.startsWith("#") || line.startsWith("//")) return;
+        const eq = line.indexOf("=");
+        if (eq > 0) {
+          const key = line.slice(0, eq).trim();
+          const val = unquoteValue(line.slice(eq + 1));
+          if (key) result[key] = val;
+          return;
+        }
+        const colonMatch = line.match(/^([A-Za-z_][A-Za-z0-9_]*)\s*[:：]\s*(.*)$/);
+        if (colonMatch) {
+          result[colonMatch[1].trim()] = unquoteValue(colonMatch[2]);
+        }
+      });
+      return stripPlaceholders(result);
     }
     const result = {};
     for (const pair of trimmed.split("&")) {
       const separator = pair.indexOf("=");
       if (separator < 0) continue;
-      const key = decodeURIComponent(pair.slice(0, separator));
-      const item = decodeURIComponent(pair.slice(separator + 1).replace(/\+/g, " "));
-      result[key] = item;
+      let key = pair.slice(0, separator).trim();
+      let item = pair.slice(separator + 1);
+      try {
+        key = decodeURIComponent(key);
+      } catch (_) {}
+      try {
+        item = decodeURIComponent(item.replace(/\+/g, " "));
+      } catch (_) {}
+      if (key) result[key] = item;
     }
-    return result;
+    return stripPlaceholders(result);
   }
 
-  // 服务商由模型名推断，每家用自己的 Key 输入框；切换模型不用重填 Key
+  function canonicalizeRawConfig(obj) {
+    const out = {};
+    if (!obj || typeof obj !== "object") return out;
+    Object.keys(obj).forEach((key) => {
+      const target = CONFIG_ALIASES[key] || key;
+      out[target] = obj[key];
+    });
+    return out;
+  }
+
+  function mergeConfigSources(baseArgument, overrideConfigText, quickOverrides) {
+    const base = canonicalizeRawConfig(parseConfigText(baseArgument));
+    const override = canonicalizeRawConfig(parseConfigText(overrideConfigText));
+    const merged = Object.assign({}, base, override);
+    const appliedKeys = Object.keys(override);
+    if (quickOverrides && typeof quickOverrides === "object") {
+      const quick = canonicalizeRawConfig(quickOverrides);
+      Object.keys(quick).forEach((key) => {
+        const val = quick[key];
+        if (val !== undefined && val !== null && String(val).trim() !== "") {
+          merged[key] = typeof val === "string" ? val.trim() : val;
+          if (!appliedKeys.includes(key)) appliedKeys.push(key);
+        }
+      });
+    }
+    return { raw: merged, appliedKeys };
+  }
+
   const PROVIDERS = Object.freeze({
     Gemini: { keyField: "api_key" },
     OpenAI: { keyField: "openai_api_key", baseUrl: "https://api.openai.com/v1" },
@@ -97,7 +304,6 @@
     return /lite|nano|haiku|deepseek-flash/i.test(String(model || "")) ? 35 : 25;
   }
 
-  // 插件里用中文显示语言名，这里换回语言代码
   const LANGUAGE_CODES = Object.freeze({
     简体中文: "zh-Hans",
     繁體中文: "zh-Hant",
@@ -112,15 +318,14 @@
   }
 
   function normalizeConfig(argument) {
-    const raw =
-      argument && typeof argument === "object" && !Array.isArray(argument)
-        ? argument
-        : parseArgumentString(argument);
+    const raw = canonicalizeRawConfig(parseConfigText(argument));
     const model = String(raw.model || raw.Model || DEFAULTS.model).trim();
+    const explicitBaseUrl = String(raw.base_url || raw.baseUrl || raw.BaseURL || "").trim();
     const providerRaw = String(raw.provider || raw.Provider || "").toLowerCase();
-    const provider = providerRaw.includes("compatible")
-      ? "OpenAI-Compatible"
-      : providerForModel(model) || (providerRaw && !providerRaw.includes("gemini") ? "OpenAI-Compatible" : "Gemini");
+    const provider =
+      providerRaw.includes("compatible") || (!providerRaw && explicitBaseUrl)
+        ? "OpenAI-Compatible"
+        : providerForModel(model) || (providerRaw && !providerRaw.includes("gemini") ? "OpenAI-Compatible" : "Gemini");
     const keyField = PROVIDERS[provider]?.keyField || "api_key";
     const configuredBatch = raw.batch_size ?? raw.max_batch_items ?? raw.maxBatchItems;
     const configuredBatchInt = Number.parseInt(configuredBatch, 10);
@@ -150,8 +355,7 @@
         raw[keyField] || (keyField === "api_key" ? raw.apiKey || raw.APIKey : "") || DEFAULTS.apiKey
       ).trim(),
       model,
-      baseUrl: PROVIDERS[provider]?.baseUrl ||
-        String(raw.base_url || raw.baseUrl || raw.BaseURL || DEFAULTS.baseUrl).trim(),
+      baseUrl: PROVIDERS[provider]?.baseUrl || explicitBaseUrl || DEFAULTS.baseUrl,
       adaptiveBatch,
       geminiBaseUrl: String(
         raw.gemini_base_url || raw.geminiBaseUrl || DEFAULTS.geminiBaseUrl
@@ -164,7 +368,6 @@
         DEFAULTS.autoTranslate
       ),
       sentenceSplit: toBoolean(raw.sentence_split ?? raw.sentenceSplit, true),
-      // 视频语言和「翻译成」相同（如看中文视频）时，改翻成这个语言
       secondaryLanguage: languageCode(raw.secondary_language || raw.secondaryLanguage || "English"),
       backgroundTranslate: toBoolean(raw.background_translate ?? raw.backgroundTranslate, true),
       strictOrder: toBoolean(raw.strict_order ?? raw.strictOrder, DEFAULTS.strictOrder),
@@ -259,7 +462,7 @@
     };
     let url;
     try {
-      url = new URL(inputUrl);
+      url = parseUrl(inputUrl);
     } catch (_) {
       result.reason = "invalid-url";
       return result;
@@ -312,7 +515,7 @@
 
   function shouldProcessResponse(inputUrl) {
     try {
-      const url = new URL(inputUrl);
+      const url = parseUrl(inputUrl);
       return url.pathname === "/api/timedtext" && url.searchParams.get(QUERY_FLAG) === "1";
     } catch (_) {
       return false;
@@ -335,12 +538,13 @@
   }
 
   function responseLanguages(inputUrl, config, cues) {
-    const url = new URL(inputUrl);
+    const url = parseUrl(inputUrl);
     const lang = url.searchParams.get("lang");
+    const explicitQueryTarget = url.searchParams.get(QUERY_TARGET);
     const source = lang || detectLanguage(cues) || "auto";
-    let target = url.searchParams.get(QUERY_TARGET) || config.targetLanguage;
+    let target = explicitQueryTarget || config.targetLanguage;
     if (
-      !lang &&
+      (!lang || !explicitQueryTarget) &&
       source !== "auto" &&
       languageRoot(source) === languageRoot(target) &&
       config.secondaryLanguage &&
@@ -555,7 +759,7 @@
     const endpoint = /\/chat\/completions$/i.test(trimmed)
       ? trimmed
       : `${trimmed}/chat/completions`;
-    const parsed = new URL(endpoint);
+    const parsed = parseUrl(endpoint);
     if (parsed.protocol !== "https:") {
       throw new Error("AI Base URL must use HTTPS");
     }
@@ -579,7 +783,6 @@
       stream: false
     };
     if (config.plainRequest) {
-      // 重试：不带任何推理/思考或自定义 temperature 参数
     } else if (config.provider === "OpenAI") {
       body.reasoning_effort = "none";
     } else if (config.provider === "DeepSeek") {
@@ -611,7 +814,7 @@
     const baseUrl = String(config.geminiBaseUrl || DEFAULTS.geminiBaseUrl)
       .trim()
       .replace(/\/+$/, "");
-    const parsedBaseUrl = new URL(baseUrl);
+    const parsedBaseUrl = parseUrl(baseUrl);
     if (parsedBaseUrl.protocol !== "https:") {
       throw new Error("Gemini Base URL must use HTTPS");
     }
@@ -728,13 +931,11 @@
     }
   }
 
-  // 解析 "id|译文" 行格式；大幅放宽限制：支持各类型分隔符(:, ., -, ｜)及 Markdown 加粗编号
   function parseTranslationText(value) {
     if (typeof value === "object" && value !== null) return value;
     const text = stripCodeFence(stripThinking(value));
     const rows = [];
     text.split(/\r?\n/).forEach((line) => {
-      // 容错匹配：0|译文, 0: 译文, 0. 译文, 0 - 译文, [0] 译文, **0**: 译文 等
       const cleaned = line.replace(
         /^\s*(?:\*\*|__)?(?:\[|\()?(\d+)(?:\]|\))?(?:\*\*|__)?\s*[:：|｜\-—.]\s*(.*)$/,
         "$1|$2"
@@ -1132,7 +1333,7 @@
   }
 
   function makeCacheKey(inputUrl, config, cues, languages) {
-    const url = new URL(inputUrl);
+    const url = parseUrl(inputUrl);
     const identity = {
       version: CACHE_VERSION,
       video: url.searchParams.get("v") || "",
@@ -1147,7 +1348,7 @@
   }
 
   function makeResponseCacheKey(inputUrl, responseBody, config) {
-    const url = new URL(inputUrl);
+    const url = parseUrl(inputUrl);
     const identity = {
       version: CACHE_VERSION,
       video: url.searchParams.get("v") || "",
@@ -1173,6 +1374,13 @@
     QUERY_TARGET,
     CACHE_VERSION,
     DEFAULTS,
+    CONFIG_ALIASES,
+    createFallbackUrl,
+    parseUrl,
+    urlPath,
+    isTimedTextUrl,
+    parseConfigText,
+    mergeConfigSources,
     normalizeConfig,
     isConfigured,
     rewriteTimedTextRequest,

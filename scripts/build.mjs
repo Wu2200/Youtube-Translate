@@ -27,8 +27,8 @@ const pluginTemplate = await readFile(
 );
 
 const banner = [
-  `// YouTube AI bilingual subtitles for Loon v${pkg.version}`,
-  "// Translates the source timedtext response with Gemini; untranslated rows stay as source text.",
+  `// YouTube AI bilingual subtitles for Loon / Quantumult X v${pkg.version}`,
+  "// Translates the source timedtext response with AI; untranslated rows stay as source text.",
   "// Only intercepts /api/timedtext so it can run alongside YouTube ad-block plugins.",
   "// Never logs API keys or full subtitle payloads.",
   ""
@@ -52,6 +52,19 @@ const remotePlugin = pluginTemplate
 await writeFile(resolve(distDir, "DualSubs.AI.YouTube.remote.plugin"), remotePlugin);
 await writeFile(resolve(distDir, "YouTube.AI.Translate.remote.plugin"), remotePlugin);
 
+const qxRewrite = [
+  `#!name=YouTube AI 双语字幕 (Quantumult X) v${pkg.version}`,
+  "#!desc=拦截 YouTube 字幕并使用 AI 翻译为双语字幕。请在「持久化数据」中添加 yt_ai_config（1 条 Key 配置全部参数）或 yt_ai_url / yt_ai_model / yt_ai_key。",
+  "",
+  `^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$ url script-request-header ${remoteScriptUrl}`,
+  `^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$ url script-response-body ${remoteScriptUrl}`,
+  `^https?:\\/\\/s\\.youtube\\.com\\/api\\/stats\\/(watchtime|qoe|playback)(\\?.*)?$ url script-request-header ${remoteScriptUrl}`,
+  "",
+  "hostname = www.youtube.com, m.youtube.com, s.youtube.com",
+  ""
+].join("\n");
+await writeFile(resolve(distDir, "YouTube.AI.Translate.qx.conf"), qxRewrite);
+
 await writeFile(
   resolve(distDir, "manifest.json"),
   `${JSON.stringify(
@@ -66,6 +79,7 @@ await writeFile(
       },
       localPlugin: "DualSubs.AI.YouTube.local.plugin",
       remotePlugin: "DualSubs.AI.YouTube.remote.plugin",
+      qxRewrite: "YouTube.AI.Translate.qx.conf",
       scriptUrl: remoteScriptUrl,
       compatibility: {
         bundle: "yt-ai.bundle.js",

@@ -63,6 +63,60 @@ async function runLoon(overrides) {
   return { doneValue, store };
 }
 
+async function runQX(overrides) {
+  const bundle = await sourceBundle();
+  let doneValue;
+  let doneResolve;
+  const donePromise = new Promise((resolve) => {
+    doneResolve = resolve;
+  });
+  const store = overrides.store || new Map();
+  const notes = [];
+  const sandbox = {
+    Date: overrides.Date || Date,
+    Promise,
+    Map,
+    JSON,
+    console: overrides.console || { log() {} },
+    setTimeout,
+    clearTimeout,
+    $request: overrides.request,
+    $response: overrides.response,
+    $task: {
+      fetch(req) {
+        return overrides.fetch(req);
+      }
+    },
+    $notify(title, subtitle, message) {
+      notes.push([title, subtitle, message].join(" | "));
+    },
+    $prefs: {
+      valueForKey(key) {
+        return store.has(key) ? store.get(key) : null;
+      },
+      setValueForKey(value, key) {
+        if (overrides.writeFails) return false;
+        store.set(key, value);
+        return true;
+      }
+    },
+    $done(value) {
+      doneValue = value;
+      doneResolve(value);
+    }
+  };
+  if (overrides.argument !== undefined) sandbox.$argument = overrides.argument;
+  if (overrides.response === undefined) delete sandbox.$response;
+  vm.runInNewContext(bundle, sandbox, { filename: "dualsubs-ai.bundle.js" });
+  await Promise.race([
+    donePromise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error("$done timeout")), overrides.doneTimeoutMs || 2500)
+    )
+  ]);
+  return { doneValue, store, notes };
+}
+
 function config(provider = "Gemini") {
   return {
     ai_enabled: true,
@@ -98,7 +152,6 @@ function sourceSrv3() {
   );
 }
 
-// 请求脚本改写后的地址：没有 tlang，带 dsai 标记和目标语言
 function processedUrl(format = "json3", video = "abc") {
   return (
     `https://www.youtube.com/api/timedtext?v=${video}&lang=en` +
@@ -125,6 +178,129 @@ function successfulGemini(callback) {
 function noGet() {
   assert.fail("0.4.1 不应再额外请求字幕");
 }
+
+test("Quantumult X works without global URL using $prefs overrides, $task.fetch, and $notify", async () => {
+  const store = new Map([
+    [
+      "yt_ai_config",
+      "url=https://qx.example.com/v1\nmodel=gpt-4o-mini\nkey=qx-secret\nwait=6500\nbatch=20\nconcurrency=3\nPosition=原文在上"
+    ]
+  ]);
+  const reqResult = await runQX({
+    store,
+    request: {
+      url: "https://www.youtube.com/api/timedtext?v=qx1&lang=en&tlang=zh-Hans&fmt=json3",
+      method: "GET",
+      headers: { "If-None-Match": "\"etag\"", Cookie: "c" }
+    },
+    fetch: () => Promise.reject(new Error("request stage should not fetch"))
+  });
+  assert.equal(reqResult.doneValue.url, undefined, "QX script-request-header 使用 path 而不是 url");
+  assert.equal(reqResult.doneValue.path, "/api/timedtext?v=qx1&lang=en&fmt=json3&dsai=1&dsai_target=zh-Hans");
+  assert.deepEqual(reqResult.doneValue.headers, { Cookie: "c" });
+
+  let fetchReq;
+  const respResult = await runQX({
+    store,
+    argument: "provider=OpenAI-Compatible&api_key={api_key}&model={model}",
+    request: {
+      url: "https://www.youtube.com/api/timedtext?v=qx1&lang=en&fmt=json3",
+      method: "GET",
+      headers: {}
+    },
+    response: {
+      status: "HTTP/1.1 200 OK",
+      statusCode: 200,
+      headers: { "Content-Type": "application/json", "Content-Length": "99" },
+      body: sourceJson3()
+    },
+    fetch(req) {
+      fetchReq = req;
+      return Promise.resolve({
+        statusCode: 200,
+        body: JSON.stringify({
+          choices: [{ message: { content: "0|圈X你好\n1|圈X世界" } }]
+        })
+      });
+    }
+  });
+  assert.equal(fetchReq.method, "POST");
+  assert.equal(fetchReq.url, "https://qx.example.com/v1/chat/completions");
+  assert.equal(fetchReq.headers.Authorization, "Bearer qx-secret");
+  assert.equal(respResult.doneValue.status, undefined, "QX 响应不传数字 status");
+  assert.equal(respResult.doneValue.statusCode, undefined);
+  const output = JSON.parse(respResult.doneValue.body);
+  assert.equal(output.events[0].segs[0].utf8, "Hello\n圈X你好");
+  assert.equal(output.events[1].segs[0].utf8, "World\n圈X世界");
+  assert.equal(respResult.doneValue.headers["x-dualsubs-ai-result"], "ai");
+
+  const quickStore = new Map([
+    ["yt_ai_url", "https://quick.example.com/v1"],
+    ["yt_ai_model", "deepseek-chat"],
+    ["yt_ai_key", "quick-key"]
+  ]);
+  let quickReq;
+  const quickResp = await runQX({
+    store: quickStore,
+    request: {
+      url: "https://www.youtube.com/api/timedtext?v=qx2&lang=en&fmt=json3",
+      method: "GET",
+      headers: {}
+    },
+    response: {
+      status: "HTTP/1.1 200 OK",
+      statusCode: 200,
+      headers: { "Content-Type": "application/json" },
+      body: sourceJson3()
+    },
+    fetch(req) {
+      quickReq = req;
+      return Promise.resolve({
+        statusCode: 200,
+        body: JSON.stringify({
+          choices: [{ message: { content: "0|快捷你好\n1|快捷世界" } }]
+        })
+      });
+    }
+  });
+  assert.equal(quickReq.url, "https://quick.example.com/v1/chat/completions");
+  assert.equal(quickReq.headers.Authorization, "Bearer quick-key");
+  assert.equal(JSON.parse(quickReq.body).model, "deepseek-chat");
+  assert.equal(JSON.parse(quickResp.doneValue.body).events[0].segs[0].utf8, "快捷你好\nHello");
+});
+
+test("Quantumult X background ping finishes remaining rows via $prefs and $notify", async () => {
+  const store = new Map([
+    ["yt_ai_url", "https://qxbg.example.com/v1"],
+    ["yt_ai_model", "gpt-4o-mini"],
+    ["yt_ai_key", "qx-key"],
+    [
+      "@DualSubs-AI.BackgroundJobs.v1",
+      JSON.stringify({
+        qxbg: {
+          key: "qxbg-key",
+          languages: { source: "en", target: "zh-Hans" },
+          cues: [{ id: 0, text: "Hello" }, { id: 1, text: "World" }],
+          remaining: 2,
+          createdAt: Date.now()
+        }
+      })
+    ]
+  ]);
+  const ping = await runQX({
+    store,
+    request: { url: pingUrl("qxbg"), method: "POST", headers: {} },
+    fetch() {
+      return Promise.resolve({
+        statusCode: 200,
+        body: JSON.stringify({ choices: [{ message: { content: "0|后台0\n1|后台1" } }] })
+      });
+    }
+  });
+  assert.deepEqual(ping.doneValue, {});
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).qxbg, undefined);
+  assert.ok(ping.notes.some((note) => /后台翻译完成/.test(note)));
+});
 
 test("request strips tlang because YouTube now answers it with 429", async () => {
   const withTarget = await runLoon({
@@ -314,7 +490,6 @@ test("OpenAI-compatible adapter retries once without extra parameters", async ()
     }
   });
   assert.equal(bodies.length, 2);
-  // 紧凑行格式不再开 JSON 模式；第一次被拒后去掉 temperature 等附加参数重试
   assert.equal(bodies[0].response_format, undefined);
   assert.equal(bodies[0].temperature, 0);
   assert.equal(bodies[1].temperature, undefined);
@@ -355,7 +530,6 @@ function tenCueJson3(prefix) {
 }
 
 function geminiRows(rows) {
-  // 按紧凑行格式回复（主路径）
   return JSON.stringify({
     candidates: [{ content: { parts: [{ text: rows.map((row) => `${row.id}|${row.text}`).join("\n") }] } }]
   });
@@ -398,7 +572,6 @@ test("deadline returns finished AI rows, leaves the rest as source text, then re
     notification: { post: () => (notifications += 1) },
     onPost(request, callback) {
       const ids = requestedIds(request);
-      // 第一批正常返回，第二批一直不返回（模拟慢请求）
       if (ids[0] === 0) callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
     }
   });
@@ -446,7 +619,6 @@ test("strictOrder uses small fast-start head batches and hides out-of-order chun
       post(request, callback) {
         const ids = requestedIds(request);
         batches.push(ids);
-        // 第 0 批 (0..11) 和第 2 批 (24..53) 完成，中间第 1 批 (12..23) 超时未返
         if (ids[0] === 0 || ids[0] === 24) {
           callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
         }
@@ -821,14 +993,12 @@ test("sentence regrouping can be turned off and changes the cache identity", asy
 
 test("a rate-limited batch is retried in the same run and the subtitles complete", async () => {
   const calls = new Map();
-  const logs = [];
   const result = await partialRun({
     store: new Map(),
     onPost(request, callback) {
       const ids = requestedIds(request);
       const key = ids.join(",");
       calls.set(key, (calls.get(key) || 0) + 1);
-      // 第二批第一次被限流，重发后正常
       if (ids[0] === 5 && calls.get(key) === 1) {
         callback(null, { status: 429 }, JSON.stringify({ error: { message: "rate limited" } }));
         return;
@@ -849,7 +1019,6 @@ test("rows the model dropped are re-requested on their own and filled in", async
     onPost(request, callback) {
       const ids = requestedIds(request);
       requests.push(ids);
-      // 第一次总是漏掉第 3 行，单独重发时正常返回
       const rows = ids.length > 1 ? ids.filter((id) => id !== 3) : ids;
       callback(null, { status: 200 }, geminiRows(rows.map((id) => ({ id, text: `AI${id}` }))));
     }
@@ -895,7 +1064,6 @@ test("partial results tell the app not to cache them; complete results drop the 
       if (ids[0] === 0) callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
     }
   });
-  // partialRun 的响应头没有 ETag，单独构造一次带校验头的部分结果
   const partialWithValidators = await runLoon({
     argument: { ...config(), parallel: "2", batch_size: "5", max_wait_ms: "3000", timeout_ms: "3000" },
     request: { url: processedUrl("json3", "validators"), method: "GET", headers: {} },
@@ -970,7 +1138,6 @@ test("partial-translation notices are shown for each video, only deduplicated br
   assert.equal(notes.length, 2, "不同视频都要通知");
   await run("videoA");
   assert.equal(notes.length, 2, "同一视频 30 秒内重复请求不重复通知");
-  // 模拟 30 秒后再次打开同一视频
   const history = JSON.parse(store.get("@DualSubs-AI.Notices.v2"));
   history["partial:videoA"] -= 31000;
   store.set("@DualSubs-AI.Notices.v2", JSON.stringify(history));
@@ -1011,7 +1178,6 @@ function slowFirstOpen(store, notes, video, extraArgs) {
       get: noGet,
       post(request, callback) {
         const ids = requestedIds(request);
-        // 第一次开字幕只来得及翻第一批
         if (ids[0] === 0) callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` }))));
       }
     }
@@ -1107,7 +1273,6 @@ test("background translation waits longer per request, so slow models still make
       get: noGet,
       post(request, callback) {
         const ids = requestedIds(request);
-        // 慢模型：一批要 6 秒，超过开字幕时 5.2 秒的单次上限
         setTimeout(() => callback(null, { status: 200 }, geminiRows(ids.map((id) => ({ id, text: `AI${id}` })))), 6000);
       }
     }
@@ -1128,7 +1293,6 @@ test("a reopen running alongside background translation does not overwrite the b
   await slowFirstOpen(store, notes, "race");
   assert.deepEqual(Object.keys(storedRows(store)).sort(), ["0", "1", "2", "3", "4"]);
 
-  // 重开视频（慢：1.5 秒后只翻出第 5 行）与后台续翻（快：立刻翻完 5～9）同时进行
   const reopen = runLoon({
     argument: { ...config(), parallel: "2", batch_size: "5", max_wait_ms: "3000", timeout_ms: "3000" },
     request: { url: processedUrl("json3", "race"), method: "GET", headers: {} },
@@ -1160,7 +1324,6 @@ test("a reopen running alongside background translation does not overwrite the b
   const rows = storedRows(store);
   assert.equal(Object.keys(rows).length, 10, "两边的结果都要保留");
   assert.match(rows["9"], /后台9/);
-  // 前台合并了后台刚存的行，这次就能完整显示
   assert.equal(reopened.doneValue.headers["x-dualsubs-ai-result"], "ai");
 });
 
@@ -1193,7 +1356,6 @@ test("background translation only reports completion after the rows are really s
 test("background translation waits 30 seconds after a subtitle load", async () => {
   const store = new Map();
   await slowFirstOpen(store, [], "cooldown");
-  // 请求阶段（打开视频）会记下字幕加载时间
   await runLoon({
     argument: config(),
     request: { url: "https://www.youtube.com/api/timedtext?v=cooldown&lang=en&fmt=json3", method: "GET", headers: {} },
@@ -1213,7 +1375,6 @@ test("background translation waits 30 seconds after a subtitle load", async () =
 
 test("background translation uses at most 3 requests at a time and yields to a new subtitle load", async () => {
   const store = new Map();
-  // 准备一个还剩 20 句的后台任务（每批最少 5 句，共 4 批）
   store.set(
     "@DualSubs-AI.BackgroundJobs.v1",
     JSON.stringify({
@@ -1239,7 +1400,6 @@ test("background translation uses at most 3 requests at a time and yields to a n
         calls += 1;
         inFlight += 1;
         maxInFlight = Math.max(maxInFlight, inFlight);
-        // 前 3 个请求并发发出后，用户切到了别的视频
         if (calls === 3) store.set("@DualSubs-AI.LastSubtitleLoad.v1", String(Date.now() + 50));
         const ids = requestedIds(request);
         setTimeout(() => {
@@ -1269,7 +1429,6 @@ test("switching to another video stops the previous video from sending new batch
       get: noGet,
       post(request, callback) {
         calls += 1;
-        // 第 2 个请求发出时，用户切到了别的视频（新的字幕请求）
         if (calls === 2) store.set("@DualSubs-AI.LastSubtitleLoad.v1", String(Date.now() + 50));
         const ids = requestedIds(request);
         setTimeout(() => callback(null, { status: 200 }, geminiRows([{ id: ids[0], text: `AI${ids[0]}` }])), 200);

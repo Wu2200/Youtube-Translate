@@ -6,6 +6,10 @@
   const NOTICE_KEY = "@DualSubs-AI.Notices.v2";
   const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
   const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
+  const CONFIG_OVERRIDE_KEY = "yt_ai_config";
+  const QUICK_URL_KEY = "yt_ai_url";
+  const QUICK_MODEL_KEY = "yt_ai_model";
+  const QUICK_KEY_KEY = "yt_ai_key";
   const ROWS_VIDEO_LIMIT = 20;
   const MIN_LAUNCH_MS = 1200;
   const RENDER_RESERVE_MS = 250;
@@ -18,15 +22,94 @@
   const MAX_BATCH_RETRIES = 1;
   const LOG_LEVELS = { OFF: 99, ERROR: 40, WARN: 30, INFO: 20, DEBUG: 10 };
   const MIN_MODEL_REQUEST_TIMEOUT_MS = 8000;
-  const config = Core.normalizeConfig(
-    typeof $argument === "undefined" ? {} : $argument
+  const isQX = typeof $task !== "undefined" && typeof $httpClient === "undefined";
+
+  function hasStore() {
+    return (
+      (typeof $persistentStore !== "undefined" && typeof $persistentStore.read === "function") ||
+      (typeof $prefs !== "undefined" && typeof $prefs.valueForKey === "function") ||
+      (typeof $pref !== "undefined" && typeof $pref.valueForKey === "function")
+    );
+  }
+
+  function storeRead(key) {
+    try {
+      if (typeof $persistentStore !== "undefined" && typeof $persistentStore.read === "function") {
+        return $persistentStore.read(key);
+      }
+      if (typeof $prefs !== "undefined" && typeof $prefs.valueForKey === "function") {
+        return $prefs.valueForKey(key);
+      }
+      if (typeof $pref !== "undefined" && typeof $pref.valueForKey === "function") {
+        return $pref.valueForKey(key);
+      }
+    } catch (_) {
+    }
+    return null;
+  }
+
+  function storeWrite(value, key) {
+    try {
+      const text = value === null || value === undefined ? "" : String(value);
+      if (typeof $persistentStore !== "undefined" && typeof $persistentStore.write === "function") {
+        return $persistentStore.write(text, key);
+      }
+      if (typeof $prefs !== "undefined" && typeof $prefs.setValueForKey === "function") {
+        return $prefs.setValueForKey(text, key);
+      }
+      if (typeof $pref !== "undefined" && typeof $pref.setValueForKey === "function") {
+        return $pref.setValueForKey(text, key);
+      }
+    } catch (_) {
+    }
+    return false;
+  }
+
+  function canNotify() {
+    return (
+      (typeof $notification !== "undefined" && typeof $notification.post === "function") ||
+      typeof $notify === "function"
+    );
+  }
+
+  function postNotification(title, subtitle, message) {
+    if (typeof $notification !== "undefined" && typeof $notification.post === "function") {
+      $notification.post(title, subtitle, message);
+      return true;
+    }
+    if (typeof $notify === "function") {
+      $notify(title, subtitle, message);
+      return true;
+    }
+    return false;
+  }
+
+  function responseStatus(response, fallback) {
+    const code = Number(response?.statusCode);
+    if (Number.isFinite(code) && code > 0) return code;
+    const numeric = Number(response?.status);
+    if (Number.isFinite(numeric) && numeric > 0) return numeric;
+    const match = String(response?.status || "").match(/\b(\d{3})\b/);
+    if (match) return Number(match[1]);
+    return fallback;
+  }
+
+  const mergedConfig = Core.mergeConfigSources(
+    typeof $argument === "undefined" ? {} : $argument,
+    storeRead(CONFIG_OVERRIDE_KEY),
+    {
+      base_url: storeRead(QUICK_URL_KEY),
+      model: storeRead(QUICK_MODEL_KEY),
+      api_key: storeRead(QUICK_KEY_KEY)
+    }
   );
+  const config = Core.normalizeConfig(mergedConfig.raw);
   const scriptStartedAt = Date.now();
   const isBackgroundPing =
     typeof $response === "undefined" &&
     /^https?:\/\/s\.youtube\.com\/api\/stats\//.test(String((typeof $request === "undefined" ? null : $request)?.url || ""));
-  const BACKGROUND_BUDGET_MS = 40000;
-  const BACKGROUND_REQUEST_TIMEOUT_MS = 25000;
+  const BACKGROUND_BUDGET_MS = isQX ? 10000 : 40000;
+  const BACKGROUND_REQUEST_TIMEOUT_MS = isQX ? 9500 : 25000;
   const BACKGROUND_CONCURRENCY = 3;
   const BACKGROUND_COOLDOWN_MS = 3000;
   const FOREGROUND_KEY = "@DualSubs-AI.LastSubtitleLoad.v1";
@@ -41,6 +124,10 @@
     console.log(`[DualSubs-AI][${level}] ${message}`);
   }
 
+  if (mergedConfig.appliedKeys.length) {
+    log("DEBUG", `Applied persistent config keys: ${mergedConfig.appliedKeys.join(", ")}`);
+  }
+
   function safeError(error) {
     return String(error?.message || error || "unknown error")
       .replace(/Bearer\s+\S+/gi, "Bearer [REDACTED]")
@@ -49,7 +136,7 @@
   }
 
   function notifyFallback(message, subtitle, options) {
-    if (typeof $notification === "undefined" || typeof $notification.post !== "function") {
+    if (!canNotify()) {
       return;
     }
     const key = options?.key || "general";
@@ -57,7 +144,7 @@
     const now = Date.now();
     let history = {};
     try {
-      const parsed = JSON.parse($persistentStore?.read(NOTICE_KEY) || "{}");
+      const parsed = JSON.parse(storeRead(NOTICE_KEY) || "{}");
       history = parsed && typeof parsed === "object" ? parsed : {};
     } catch (_) {
       history = {};
@@ -68,8 +155,8 @@
       const recent = Object.keys(history)
         .sort((a, b) => history[b] - history[a])
         .slice(0, 30);
-      $persistentStore?.write(JSON.stringify(Object.fromEntries(recent.map((item) => [item, history[item]]))), NOTICE_KEY);
-      $notification.post(
+      storeWrite(JSON.stringify(Object.fromEntries(recent.map((item) => [item, history[item]]))), NOTICE_KEY);
+      postNotification(
         "YouTube AI 双语字幕",
         subtitle || "AI 翻译未完成，本次只显示原文字幕",
         message
@@ -116,21 +203,34 @@
 
   function doneRequest(url, headers) {
     if (url === $request.url && !headers) return $done({});
+    if (isQX) {
+      const value = {};
+      if (url !== $request.url) value.path = Core.urlPath(url);
+      if (headers) value.headers = headers;
+      return $done(value);
+    }
     const value = { url };
     if (headers) value.headers = headers;
     return $done(value);
   }
 
   function doneBody(body, contentType, result, error, options) {
+    const headers = sanitizedHeaders(contentType, result, error, Object.assign({ rewritten: true }, options));
+    if (isQX) {
+      return $done({ headers, body });
+    }
     return $done(
       Object.assign({}, $response, {
-        headers: sanitizedHeaders(contentType, result, error, Object.assign({ rewritten: true }, options)),
+        headers,
         body
       })
     );
   }
 
   function donePassthrough(result, error) {
+    if (isQX) {
+      return $done({});
+    }
     return $done(
       Object.assign({}, $response, {
         headers: sanitizedHeaders(
@@ -153,8 +253,10 @@
 
   function httpPost(request) {
     return new Promise((resolve, reject) => {
-      if (typeof $httpClient === "undefined" || typeof $httpClient.post !== "function") {
-        reject(new Error("Loon $httpClient.post is unavailable"));
+      const useLoonClient = typeof $httpClient !== "undefined" && typeof $httpClient.post === "function";
+      const useQXFetch = !useLoonClient && typeof $task !== "undefined" && typeof $task.fetch === "function";
+      if (!useLoonClient && !useQXFetch) {
+        reject(new Error("HTTP client ($httpClient.post / $task.fetch) is unavailable"));
         return;
       }
       let settled = false;
@@ -167,15 +269,18 @@
         settled = true;
         reject(new Error(`AI timeout after ${timeoutMs}ms`));
       }, timeoutMs);
-      $httpClient.post(request, (error, response, body) => {
+      function finish(error, response, body) {
         if (settled) return;
         settled = true;
         clearTimeout(timer);
         if (error) {
-          reject(new Error(String(error)));
+          const message = typeof error === "string"
+            ? error
+            : String(error?.error || error?.message || error);
+          reject(new Error(message));
           return;
         }
-        const status = Number(response?.status || response?.statusCode || 0);
+        const status = responseStatus(response, 0);
         if (status < 200 || status >= 300) {
           const failure = new Error(`AI HTTP ${status || "unknown"}`);
           failure.status = status;
@@ -184,7 +289,22 @@
           return;
         }
         resolve(String(body || ""));
-      });
+      }
+      if (useLoonClient) {
+        $httpClient.post(request, finish);
+      } else {
+        $task
+          .fetch({
+            url: request.url,
+            method: "POST",
+            headers: request.headers,
+            body: request.body
+          })
+          .then(
+            (response) => finish(null, response, response?.body),
+            (reason) => finish(reason || "QX fetch error")
+          );
+      }
     });
   }
 
@@ -425,7 +545,7 @@
 
   function readJsonStore(key, fallback) {
     try {
-      const value = typeof $persistentStore === "undefined" ? null : $persistentStore.read(key);
+      const value = storeRead(key);
       const parsed = value ? JSON.parse(value) : fallback;
       return parsed && typeof parsed === "object" ? parsed : fallback;
     } catch (_) {
@@ -435,7 +555,7 @@
 
   function writeJsonStore(key, value) {
     try {
-      if (typeof $persistentStore !== "undefined") $persistentStore.write(JSON.stringify(value), key);
+      if (hasStore()) storeWrite(JSON.stringify(value), key);
     } catch (_) {
     }
   }
@@ -476,9 +596,9 @@
   }
 
   function readRows(key) {
-    if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") return new Map();
+    if (config.cacheEntries <= 0 || !hasStore()) return new Map();
     try {
-      const parsed = JSON.parse($persistentStore.read(ROWS_PREFIX + key) || "{}");
+      const parsed = JSON.parse(storeRead(ROWS_PREFIX + key) || "{}");
       return new Map(Object.entries(parsed && typeof parsed === "object" ? parsed : {}));
     } catch (_) {
       return new Map();
@@ -486,12 +606,12 @@
   }
 
   function writeRows(key, rows) {
-    if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") return null;
+    if (config.cacheEntries <= 0 || !hasStore()) return null;
     try {
       const merged = readRows(key);
       rows.forEach((text, id) => merged.set(String(id), text));
       const payload = JSON.stringify(Object.fromEntries(merged));
-      const saved = $persistentStore.write(payload, ROWS_PREFIX + key);
+      const saved = storeWrite(payload, ROWS_PREFIX + key);
       const stored = readRows(key);
       if (saved === false || stored.size < merged.size) {
         log("WARN", `Row cache write failed (${merged.size} rows, ${payload.length} chars)`);
@@ -503,7 +623,7 @@
       list.unshift(key);
       list.slice(ROWS_VIDEO_LIMIT).forEach((old) => {
         try {
-          $persistentStore.write("", ROWS_PREFIX + old);
+          storeWrite("", ROWS_PREFIX + old);
         } catch (_) {
         }
       });
@@ -516,12 +636,12 @@
   }
 
   function loadCache() {
-    if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") {
+    if (config.cacheEntries <= 0 || !hasStore()) {
       return { entries: [] };
     }
     try {
       const parsed = JSON.parse(
-        $persistentStore.read(CACHE_KEY) || "{\"entries\":[]}"
+        storeRead(CACHE_KEY) || "{\"entries\":[]}"
       );
       return Array.isArray(parsed?.entries) ? parsed : { entries: [] };
     } catch (_) {
@@ -542,7 +662,7 @@
   }
 
   function writeCache(key, value, ttlMs) {
-    if (config.cacheEntries <= 0 || typeof $persistentStore === "undefined") return;
+    if (config.cacheEntries <= 0 || !hasStore()) return;
     try {
       const cache = loadCache();
       const entries = cache.entries.filter((item) => item?.key !== key);
@@ -563,7 +683,7 @@
         payload = JSON.stringify({ entries });
       }
       if (payload.length <= config.cacheMaxChars) {
-        $persistentStore.write(payload, CACHE_KEY);
+        storeWrite(payload, CACHE_KEY);
       }
     } catch (error) {
       log("WARN", `Cache write skipped: ${safeError(error)}`);
@@ -579,8 +699,8 @@
       .slice(0, JOB_LIMIT);
     const payload = JSON.stringify(Object.fromEntries(recent.map((key) => [key, jobs[key]])));
     try {
-      if (typeof $persistentStore === "undefined") return false;
-      const saved = $persistentStore.write(payload, JOB_KEY);
+      if (!hasStore()) return false;
+      const saved = storeWrite(payload, JOB_KEY);
       if (saved === false) {
         log("WARN", `Background job save failed (${payload.length} chars)`);
         return false;
@@ -608,7 +728,7 @@
     const job = jobs[videoId];
     log("INFO", `Playback ping ${endpoint} for ${videoId || "?"}; background job: ${job ? `${job.remaining} rows left` : "none"}`);
     if (!job || !config.backgroundTranslate || !config.aiEnabled || !Core.isConfigured(config)) return;
-    const lastLoad = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
+    const lastLoad = Number(storeRead(FOREGROUND_KEY) || 0);
     if (Date.now() - lastLoad < BACKGROUND_COOLDOWN_MS) {
       log("INFO", `Subtitles loaded ${Math.round((Date.now() - lastLoad) / 1000)}s ago; background translation waits`);
       return;
@@ -637,7 +757,7 @@
           strictOrder: true,
           maxRetries: 2,
           shouldStop: () => {
-            const latest = Number($persistentStore.read(FOREGROUND_KEY) || 0);
+            const latest = Number(storeRead(FOREGROUND_KEY) || 0);
             if (latest > startedAt) {
               log("INFO", "New subtitle load detected; background translation pauses");
               return true;
@@ -691,7 +811,9 @@
     if (rewritten.reason === "missing-config" && config.aiEnabled) {
       const provider = config.provider === "OpenAI-Compatible" ? "AI" : config.provider;
       notifyFallback(
-        `已选择模型 ${config.model}，但还没填写 ${provider} API Key，本次只显示原文字幕。`,
+        isQX
+          ? `已选择模型 ${config.model}，但还没填写 ${provider} API Key。请在圈X「持久化数据」中添加 yt_ai_config 或 yt_ai_key。`
+          : `已选择模型 ${config.model}，但还没填写 ${provider} API Key，本次只显示原文字幕。`,
         "缺少 API Key",
         { key: "missing-key" }
       );
@@ -717,17 +839,20 @@
 
   function markSubtitleLoad() {
     try {
-      if (typeof $persistentStore !== "undefined") $persistentStore.write(String(Date.now()), FOREGROUND_KEY);
+      if (hasStore()) storeWrite(String(Date.now()), FOREGROUND_KEY);
     } catch (_) {
     }
   }
 
   async function handleResponse() {
-    if (!Core.shouldProcessResponse($request.url)) {
+    const shouldProcess =
+      Core.shouldProcessResponse($request.url) ||
+      (isQX && Core.isTimedTextUrl($request.url) && config.aiEnabled && config.autoTranslate && Core.isConfigured(config));
+    if (!shouldProcess) {
       donePassthrough("skipped");
       return;
     }
-    const status = Number($response?.status || $response?.statusCode || 200);
+    const status = responseStatus($response, 200);
     if (status < 200 || status >= 300) {
       log("WARN", `Subtitle HTTP ${status}; passing through`);
       donePassthrough("upstream-error");
@@ -802,7 +927,7 @@
         ? await translateWithinDeadline(batches, languages, plan.expectedMs, {
             strictOrder: config.strictOrder,
             shouldStop: () => {
-              const latest = Number((typeof $persistentStore === "undefined" ? 0 : $persistentStore.read(FOREGROUND_KEY)) || 0);
+              const latest = Number(storeRead(FOREGROUND_KEY) || 0);
               if (latest > scriptStartedAt) {
                 log("INFO", "A newer subtitle load started; this video stops sending new batches");
                 return true;

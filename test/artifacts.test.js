@@ -30,11 +30,12 @@ test("generated bundle hash matches manifest and contains both runtimes", async 
 });
 
 test("published plugin artifacts use matching escaped URLs and custom OpenAI settings", async () => {
-  const [remotePlugin, legacyRemotePlugin, localPlugin, legacyLocalPlugin, manifestText] = await Promise.all([
+  const [remotePlugin, legacyRemotePlugin, localPlugin, legacyLocalPlugin, qxRewrite, manifestText] = await Promise.all([
     readArtifact("dist/DualSubs.AI.YouTube.remote.plugin"),
     readArtifact("dist/YouTube.AI.Translate.remote.plugin"),
     readArtifact("dist/DualSubs.AI.YouTube.local.plugin"),
     readArtifact("dist/YouTube.AI.Translate.local.plugin"),
+    readArtifact("dist/YouTube.AI.Translate.qx.conf"),
     readArtifact("dist/manifest.json")
   ]);
   const manifest = JSON.parse(manifestText);
@@ -45,9 +46,14 @@ test("published plugin artifacts use matching escaped URLs and custom OpenAI set
     manifest.scriptUrl,
     "https://raw.githubusercontent.com/Wu2200/Youtube-Translate/main/dist/dualsubs-ai.bundle.js"
   );
+  assert.equal(manifest.qxRewrite, "YouTube.AI.Translate.qx.conf");
   assert.ok(remotePlugin.includes(`script-path=${manifest.scriptUrl},`));
   assert.ok(localPlugin.includes("script-path=dualsubs-ai.bundle.js,"));
   assert.doesNotMatch(remotePlugin, /\{\{SCRIPT_URL\}\}/);
+
+  assert.ok(qxRewrite.includes(`url script-request-header ${manifest.scriptUrl}`));
+  assert.ok(qxRewrite.includes(`url script-response-body ${manifest.scriptUrl}`));
+  assert.match(qxRewrite, /^hostname = www\.youtube\.com, m\.youtube\.com, s\.youtube\.com$/m);
 
   const expectedPatterns = [
     "^https?:\\/\\/(www|m)\\.youtube\\.com\\/api\\/timedtext(\\?.+)?$",

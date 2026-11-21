@@ -54,6 +54,53 @@ test("normalizes DualSubs AI settings and keeps secrets opaque", () => {
   assert.equal(Core.normalizeConfig({ timeout_ms: "5000" }).timeoutMs, 8000);
 });
 
+test("parses multi-line, JSON, and quick persistent config overrides with aliases", () => {
+  const multiline = Core.parseConfigText([
+    "# comment",
+    "url = https://proxy.example.com/v1",
+    "model: \"gpt-4.1-mini\"",
+    "key = sk-multi",
+    "wait = 6200",
+    "batch = 18",
+    "chars = 2200",
+    "parallel = 4",
+    "order = false"
+  ].join("\n"));
+  const merged = Core.mergeConfigSources(
+    { provider: "OpenAI-Compatible", base_url: "https://api.openai.com/v1", model: "{model}", api_key: "{api_key}" },
+    multiline,
+    { api_key: "sk-quick" }
+  );
+  const normalized = Core.normalizeConfig(merged.raw);
+  assert.equal(normalized.provider, "OpenAI-Compatible");
+  assert.equal(normalized.baseUrl, "https://proxy.example.com/v1");
+  assert.equal(normalized.model, "gpt-4.1-mini");
+  assert.equal(normalized.apiKey, "sk-quick");
+  assert.equal(normalized.maxWaitMs, 6200);
+  assert.equal(normalized.maxBatchItems, 18);
+  assert.equal(normalized.maxBatchChars, 2200);
+  assert.equal(normalized.concurrency, 4);
+  assert.equal(normalized.strictOrder, false);
+
+  const smartJson = Core.parseConfigText("{\u201curl\u201d:\u201chttps://smart.example/v1\u201d,\u201ckey\u201d:\u201csk-1\u201d,\u201cmodel\u201d:\u201cgemini-2.5-flash\u201d}");
+  const inferred = Core.normalizeConfig(smartJson);
+  assert.equal(inferred.provider, "OpenAI-Compatible");
+  assert.equal(inferred.baseUrl, "https://smart.example/v1");
+  assert.equal(inferred.apiKey, "sk-1");
+});
+
+test("fallback URL parser supports query manipulation without global URL", () => {
+  const parsed = Core.createFallbackUrl("https://www.youtube.com/api/timedtext?v=abc&lang=en&tlang=zh-Hans");
+  assert.equal(parsed.protocol, "https:");
+  assert.equal(parsed.pathname, "/api/timedtext");
+  assert.equal(parsed.searchParams.get("v"), "abc");
+  parsed.searchParams.delete("tlang");
+  parsed.searchParams.set("dsai", "1");
+  parsed.searchParams.set("dsai_target", "zh-Hans");
+  assert.equal(parsed.toString(), "https://www.youtube.com/api/timedtext?v=abc&lang=en&dsai=1&dsai_target=zh-Hans");
+  assert.equal(`${parsed.pathname}${parsed.search}`, "/api/timedtext?v=abc&lang=en&dsai=1&dsai_target=zh-Hans");
+});
+
 test("rewrites timedtext to the source track and never keeps tlang", () => {
   const config = Core.normalizeConfig({ api_key: "k", model: "m", target_language: "zh-Hans" });
   const explicit = Core.rewriteTimedTextRequest(
