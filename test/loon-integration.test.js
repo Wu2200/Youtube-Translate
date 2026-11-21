@@ -197,7 +197,7 @@ test("Quantumult X works without global URL using $prefs overrides, $task.fetch,
   });
   assert.equal(reqResult.doneValue.url, undefined, "QX script-request-header 使用 path 而不是 url");
   assert.equal(reqResult.doneValue.path, "/api/timedtext?v=qx1&lang=en&fmt=json3&dsai=1&dsai_target=zh-Hans");
-  assert.deepEqual(reqResult.doneValue.headers, { Cookie: "c" });
+  assert.equal(JSON.stringify(reqResult.doneValue.headers), JSON.stringify({ Cookie: "c" }));
 
   let fetchReq;
   const respResult = await runQX({
@@ -297,7 +297,7 @@ test("Quantumult X background ping finishes remaining rows via $prefs and $notif
       });
     }
   });
-  assert.deepEqual(ping.doneValue, {});
+  assert.equal(JSON.stringify(ping.doneValue), "{}");
   assert.equal(JSON.parse(store.get("@DualSubs-AI.BackgroundJobs.v1")).qxbg, undefined);
   assert.ok(ping.notes.some((note) => /后台翻译完成/.test(note)));
 });
