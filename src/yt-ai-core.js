@@ -12,12 +12,13 @@
 
   const DEFAULTS = Object.freeze({
     provider: "Gemini",
-    aiEnabled: true,
+    aiEnabled: false,
     apiKey: "",
     model: "gemini-3.5-flash-lite",
     baseUrl: "https://api.openai.com/v1",
     geminiBaseUrl: "https://generativelanguage.googleapis.com/v1beta",
     targetLanguage: "zh-Hans",
+    secondaryLanguage: "zh-Hans",
     autoTranslate: true,
     showOnly: false,
     position: "TranslationFirst",
@@ -33,9 +34,9 @@
     originalFetchTimeoutMs: 10000,
     alignmentToleranceMs: 160,
     thinkingLevel: "minimal",
-    cacheEntries: 6,
+    cacheEntries: 5,
     cacheMaxChars: 180000,
-    logLevel: "INFO"
+    logLevel: "OFF"
   });
 
   const CONFIG_ALIASES = Object.freeze({
@@ -368,7 +369,9 @@
         DEFAULTS.autoTranslate
       ),
       sentenceSplit: toBoolean(raw.sentence_split ?? raw.sentenceSplit, true),
-      secondaryLanguage: languageCode(raw.secondary_language || raw.secondaryLanguage || "English"),
+      secondaryLanguage: languageCode(
+        raw.secondary_language || raw.secondaryLanguage || DEFAULTS.secondaryLanguage
+      ),
       backgroundTranslate: toBoolean(raw.background_translate ?? raw.backgroundTranslate, true),
       strictOrder: toBoolean(raw.strict_order ?? raw.strictOrder, DEFAULTS.strictOrder),
       showOnly: toBoolean(
