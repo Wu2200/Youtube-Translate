@@ -2,13 +2,14 @@
   "name": "loon-youtube-ai-translator",
   "version": "0.10.0",
   "bundle": "dualsubs-ai.bundle.js",
-  "sha256": "fdf537fa6d4d961f713d6a628669066d6fd27df532b1c11c22d761d5214452c9",
+  "sha256": "bad5b66bd1fd4fe29f2c7561ce3a5d376bd1f5d5da9b75d2db36206aa46fd9a9",
   "upstream": {
     "youtube": "v1.5.11",
     "universalReference": "v1.7.5"
   },
   "localPlugin": "DualSubs.AI.YouTube.local.plugin",
   "remotePlugin": "DualSubs.AI.YouTube.remote.plugin",
+  "qxRewrite": "YouTube.AI.Translate.qx.conf",
   "scriptUrl": "https://raw.githubusercontent.com/Wu2200/Youtube-Translate/main/dist/dualsubs-ai.bundle.js",
   "compatibility": {
     "bundle": "yt-ai.bundle.js",
