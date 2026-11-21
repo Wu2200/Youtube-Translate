@@ -9,13 +9,13 @@
 #!version = 0.10.0
 
 [Argument]
-ai_enabled = switch,true,tag=AI 翻译,desc=关闭后不做翻译，只显示 YouTube 原文字幕
+ai_enabled = switch,false,tag=AI 翻译,desc=关闭后不做翻译，只显示 YouTube 原文字幕
 provider = select,"OpenAI-Compatible",tag=接口协议,desc=使用支持 OpenAI Chat Completions 的接口
 model = input,"gpt-4o-mini",tag=模型,desc=填写自定义接口支持的模型名称
 base_url = input,"https://api.openai.com/v1",tag=API 地址,desc=填写兼容接口基础地址
 api_key = input,"",tag=API Key,desc=填写自定义接口提供的密钥
 target_language = select,"简体中文","繁體中文","日本語","한국어","English",tag=翻译成,desc=如果在 YouTube 字幕菜单里选了自动翻译成某种语言，以菜单为准
-secondary_language = select,"English","简体中文","繁體中文","日本語","한국어",tag=同语言视频翻译成,desc=视频本身就是翻译目标语言时，改翻成这个语言
+secondary_language = select,"简体中文","English","繁體中文","日本語","한국어",tag=同语言视频翻译成,desc=视频本身就是翻译目标语言时，改翻成这个语言
 Position = select,"原文在上","译文在上",tag=字幕顺序,desc=每种语言各占一行
 ShowOnly = switch,false,tag=只显示译文,desc=开启后不显示原文
 background_translate = switch,true,tag=播放时后台续翻,desc=长视频第一次没翻完时，看视频期间借 YouTube 的观看统计请求在后台接着翻，翻完会通知；之后重新打开视频即可看到完整双语字幕。中途不看的视频也可能被翻完，会多用一些 API 额度
@@ -27,7 +27,7 @@ max_batch_items = input,"30",tag=每批字幕条数,desc=每次请求最多翻�
 max_batch_chars = input,"3500",tag=每批最大字符数,desc=按文本量限制单批大小（500～50000）。句子较长时自动减少本批条数，避免单批过慢超时
 concurrency = input,"5",tag=前台并发数,desc=首次翻译同时发出的请求数量（1～16）。设成 1 为严格逐批顺序翻译；越大吞吐越高，过大易触发限流
 custom_prompt = input,"",tag=额外翻译要求,desc=例如人名保留英文或科技术语按业内习惯翻译。不要在这里填写密钥
-LogLevel = select,"INFO","DEBUG","WARN","ERROR","OFF",tag=日志等级,desc=排查问题时查看 Loon 脚本日志；日志不记录 API Key 和字幕全文
+LogLevel = select,"OFF","INFO","DEBUG","WARN","ERROR",tag=日志等级,desc=排查问题时查看 Loon 脚本日志；日志不记录 API Key 和字幕全文
 
 [Rule]
 # YouTube 走 QUIC（UDP）时 Loon 无法解密，字幕、观看统计和去广告脚本都会被绕过。
