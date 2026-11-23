@@ -98,6 +98,9 @@ async function runQX(overrides) {
         if (overrides.writeFails) return false;
         store.set(key, value);
         return true;
+      },
+      removeValueForKey(key) {
+        return store.delete(key);
       }
     },
     $done(value) {
@@ -1295,8 +1298,10 @@ test("background translation waits longer per request, so slow models still make
 });
 
 function storedRows(store) {
-  const key = [...store.keys()].find((name) => name.startsWith("@DualSubs-AI.Rows.v2:"));
-  return key ? JSON.parse(store.get(key) || "{}") : {};
+  const key = [...store.keys()].find((name) => name.startsWith("@DualSubs-AI.Rows.slot."));
+  if (!key) return {};
+  const parsed = JSON.parse(store.get(key) || "{}");
+  return parsed.rows && typeof parsed.rows === "object" ? parsed.rows : {};
 }
 
 test("a reopen running alongside background translation does not overwrite the background rows", async () => {
@@ -1452,7 +1457,7 @@ test("switching to another video stops the previous video from sending new batch
   assert.equal(result.doneValue.headers["x-dualsubs-ai-result"], "ai-partial");
 });
 
-test("translated rows are kept for the 5 most recent videos", async () => {
+test("translated rows reuse 5 fixed slots and QX removes expired or legacy keys", async () => {
   const store = new Map();
   for (let index = 0; index < 7; index += 1) {
     await runLoon({
@@ -1473,9 +1478,54 @@ test("translated rows are kept for the 5 most recent videos", async () => {
       }
     });
   }
-  const kept = [...store.entries()].filter(([key, value]) => key.startsWith("@DualSubs-AI.Rows.v2:") && value);
-  assert.equal(kept.length, 5, "最多保留最近 5 个视频");
-  assert.equal(JSON.parse(store.get("@DualSubs-AI.RowsIndex.v2")).length, 5);
+  const slotKeys = [...store.keys()].filter((key) => key.startsWith("@DualSubs-AI.Rows.slot."));
+  assert.equal(slotKeys.length, 5, "固定复用 5 个槽位，不产生额外残留 Key");
+  assert.equal(JSON.parse(store.get("@DualSubs-AI.RowsSlots.v1")).length, 5);
+
+  let fakeNow = 1_700_000_000_000;
+  const FakeDate = { now: () => fakeNow };
+  const qxStore = new Map([
+    ["yt_ai_url", "https://qxclean.example.com/v1"],
+    ["yt_ai_model", "gpt-4o-mini"],
+    ["yt_ai_key", "qx-key"],
+    ["@DualSubs-AI.RowsIndex.v2", JSON.stringify(["v4:old1"])],
+    ["@DualSubs-AI.RowsMeta.v1", JSON.stringify({ "v4:old1": fakeNow - 1000 })],
+    ["@DualSubs-AI.Rows.v2:v4:old1", "{\"0\":\"旧数据\"}"]
+  ]);
+  await runQX({
+    store: qxStore,
+    Date: FakeDate,
+    request: { url: "https://www.youtube.com/api/timedtext?v=qxclean1&lang=en&fmt=json3", method: "GET", headers: {} },
+    response: { status: "HTTP/1.1 200 OK", statusCode: 200, headers: { "Content-Type": "application/json" }, body: sourceJson3() },
+    fetch() {
+      return Promise.resolve({
+        statusCode: 200,
+        body: JSON.stringify({ choices: [{ message: { content: "0|新0\n1|新1" } }] })
+      });
+    }
+  });
+  assert.equal(qxStore.has("@DualSubs-AI.Rows.v2:v4:old1"), false, "旧版哈希 Key 应被 removeValueForKey 删除");
+  assert.equal(qxStore.has("@DualSubs-AI.RowsIndex.v2"), false);
+  assert.equal(qxStore.has("@DualSubs-AI.RowsMeta.v1"), false);
+  assert.equal(qxStore.has("@DualSubs-AI.Rows.slot.0"), true);
+
+  fakeNow += 12 * 3600 * 1000 + 1;
+  await runQX({
+    store: qxStore,
+    Date: FakeDate,
+    request: { url: "https://www.youtube.com/api/timedtext?v=qxclean2&lang=en&fmt=json3", method: "GET", headers: {} },
+    response: { status: "HTTP/1.1 200 OK", statusCode: 200, headers: { "Content-Type": "application/json" }, body: sourceJson3() },
+    fetch() {
+      return Promise.resolve({
+        statusCode: 200,
+        body: JSON.stringify({ choices: [{ message: { content: "0|二0\n1|二1" } }] })
+      });
+    }
+  });
+  const qxSlots = JSON.parse(qxStore.get("@DualSubs-AI.RowsSlots.v1"));
+  assert.equal(qxSlots.length, 1, "过期槽位应被清理，新视频复用槽位 0");
+  assert.equal(qxSlots[0].slot, 0);
+  assert.equal(qxStore.has("@DualSubs-AI.Rows.slot.1"), false);
 });
 
 test("a Chinese video gets Chinese on top and the English translation below", async () => {
