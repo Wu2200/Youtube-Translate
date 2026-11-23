@@ -4,9 +4,11 @@
   const Core = globalThis.YTAI;
   const CACHE_KEY = "@DualSubs-AI.Cache.v1";
   const NOTICE_KEY = "@DualSubs-AI.Notices.v2";
-  const ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
-  const ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
-  const ROWS_META_KEY = "@DualSubs-AI.RowsMeta.v1";
+  const ROWS_SLOT_PREFIX = "@DualSubs-AI.Rows.slot.";
+  const ROWS_SLOTS_KEY = "@DualSubs-AI.RowsSlots.v1";
+  const LEGACY_ROWS_PREFIX = "@DualSubs-AI.Rows.v2:";
+  const LEGACY_ROWS_INDEX_KEY = "@DualSubs-AI.RowsIndex.v2";
+  const LEGACY_ROWS_META_KEY = "@DualSubs-AI.RowsMeta.v1";
   const CONFIG_OVERRIDE_KEY = "yt_ai_config";
   const QUICK_URL_KEY = "yt_ai_url";
   const QUICK_MODEL_KEY = "yt_ai_model";
@@ -61,6 +63,28 @@
       }
       if (typeof $pref !== "undefined" && typeof $pref.setValueForKey === "function") {
         return $pref.setValueForKey(text, key);
+      }
+    } catch (_) {
+    }
+    return false;
+  }
+
+  function storeRemove(key) {
+    try {
+      if (typeof $prefs !== "undefined" && typeof $prefs.removeValueForKey === "function") {
+        return $prefs.removeValueForKey(key);
+      }
+      if (typeof $pref !== "undefined" && typeof $pref.removeValueForKey === "function") {
+        return $pref.removeValueForKey(key);
+      }
+      if (typeof $persistentStore !== "undefined" && typeof $persistentStore.write === "function") {
+        return $persistentStore.write("", key);
+      }
+      if (typeof $prefs !== "undefined" && typeof $prefs.setValueForKey === "function") {
+        return $prefs.setValueForKey("", key);
+      }
+      if (typeof $pref !== "undefined" && typeof $pref.setValueForKey === "function") {
+        return $pref.setValueForKey("", key);
       }
     } catch (_) {
     }
@@ -597,23 +621,66 @@
     return batches;
   }
 
+  function readRowSlots() {
+    const raw = readJsonStore(ROWS_SLOTS_KEY, []);
+    if (!Array.isArray(raw)) return [];
+    return raw.filter(
+      (item) =>
+        item &&
+        Number.isInteger(item.slot) &&
+        item.slot >= 0 &&
+        item.slot < ROWS_VIDEO_LIMIT &&
+        typeof item.key === "string" &&
+        item.key
+    );
+  }
+
+  function cleanupLegacyRows() {
+    const rawOldIndex = storeRead(LEGACY_ROWS_INDEX_KEY);
+    const rawOldMeta = storeRead(LEGACY_ROWS_META_KEY);
+    if (!rawOldIndex && !rawOldMeta) return;
+    const legacyKeys = new Set();
+    const oldIndex = readJsonStore(LEGACY_ROWS_INDEX_KEY, null);
+    if (Array.isArray(oldIndex)) {
+      oldIndex.forEach((item) => {
+        if (typeof item === "string" && item) legacyKeys.add(item);
+      });
+    }
+    const oldMeta = readJsonStore(LEGACY_ROWS_META_KEY, null);
+    if (oldMeta && typeof oldMeta === "object" && !Array.isArray(oldMeta)) {
+      Object.keys(oldMeta).forEach((item) => {
+        if (item) legacyKeys.add(item);
+      });
+    }
+    legacyKeys.forEach((oldKey) => {
+      storeRemove(LEGACY_ROWS_PREFIX + oldKey);
+    });
+    storeRemove(LEGACY_ROWS_INDEX_KEY);
+    storeRemove(LEGACY_ROWS_META_KEY);
+  }
+
   function readRows(key) {
     if (config.cacheEntries <= 0 || !hasStore()) return new Map();
     try {
-      const meta = readJsonStore(ROWS_META_KEY, {});
-      const updatedAt = Number(meta[key] || 0);
-      if (updatedAt > 0 && Date.now() - updatedAt > CACHE_TTL_MS) {
-        storeWrite("", ROWS_PREFIX + key);
-        delete meta[key];
-        writeJsonStore(ROWS_META_KEY, meta);
-        const index = readJsonStore(ROWS_INDEX_KEY, []);
-        if (Array.isArray(index)) {
-          writeJsonStore(ROWS_INDEX_KEY, index.filter((item) => item !== key));
-        }
+      const slots = readRowSlots();
+      const entry = slots.find((item) => item.key === key);
+      if (!entry) return new Map();
+      const slotKey = ROWS_SLOT_PREFIX + entry.slot;
+      const now = Date.now();
+      if (entry.updatedAt > 0 && now - entry.updatedAt > CACHE_TTL_MS) {
+        storeRemove(slotKey);
+        writeJsonStore(ROWS_SLOTS_KEY, slots.filter((item) => item.slot !== entry.slot));
         return new Map();
       }
-      const parsed = JSON.parse(storeRead(ROWS_PREFIX + key) || "{}");
-      return new Map(Object.entries(parsed && typeof parsed === "object" ? parsed : {}));
+      const parsed = JSON.parse(storeRead(slotKey) || "null");
+      if (!parsed || typeof parsed !== "object" || parsed.key !== key) return new Map();
+      if (parsed.updatedAt > 0 && now - parsed.updatedAt > CACHE_TTL_MS) {
+        storeRemove(slotKey);
+        writeJsonStore(ROWS_SLOTS_KEY, slots.filter((item) => item.slot !== entry.slot));
+        return new Map();
+      }
+      const rowsObj = parsed.rows && typeof parsed.rows === "object" ? parsed.rows : {};
+      return new Map(Object.entries(rowsObj));
     } catch (_) {
       return new Map();
     }
@@ -622,31 +689,59 @@
   function writeRows(key, rows) {
     if (config.cacheEntries <= 0 || !hasStore()) return null;
     try {
+      cleanupLegacyRows();
+      const now = Date.now();
+      const activeSlots = [];
+      readRowSlots().forEach((item) => {
+        if (item.updatedAt > 0 && now - item.updatedAt > CACHE_TTL_MS) {
+          storeRemove(ROWS_SLOT_PREFIX + item.slot);
+        } else {
+          activeSlots.push(item);
+        }
+      });
+      const existing = activeSlots.find((item) => item.key === key);
+      let slot;
+      if (existing) {
+        slot = existing.slot;
+      } else {
+        const used = new Set(activeSlots.map((item) => item.slot));
+        for (let i = 0; i < ROWS_VIDEO_LIMIT; i += 1) {
+          if (!used.has(i)) {
+            slot = i;
+            break;
+          }
+        }
+        if (slot === undefined) {
+          const oldest = activeSlots[activeSlots.length - 1];
+          slot = oldest ? oldest.slot : 0;
+        }
+      }
       const merged = readRows(key);
       rows.forEach((text, id) => merged.set(String(id), text));
-      const payload = JSON.stringify(Object.fromEntries(merged));
-      const saved = storeWrite(payload, ROWS_PREFIX + key);
-      const stored = readRows(key);
-      if (saved === false || stored.size < merged.size) {
+      const slotKey = ROWS_SLOT_PREFIX + slot;
+      const payload = JSON.stringify({
+        key,
+        updatedAt: now,
+        rows: Object.fromEntries(merged)
+      });
+      const saved = storeWrite(payload, slotKey);
+      let storedRowsMap = new Map();
+      try {
+        const verified = JSON.parse(storeRead(slotKey) || "null");
+        if (verified && verified.key === key && verified.rows && typeof verified.rows === "object") {
+          storedRowsMap = new Map(Object.entries(verified.rows));
+        }
+      } catch (_) {
+      }
+      if (saved === false || storedRowsMap.size < merged.size) {
         log("WARN", `Row cache write failed (${merged.size} rows, ${payload.length} chars)`);
         return null;
       }
-      log("DEBUG", `Row cache saved (${stored.size} rows, ${payload.length} chars)`);
-      const index = readJsonStore(ROWS_INDEX_KEY, []);
-      const list = (Array.isArray(index) ? index : []).filter((item) => item !== key);
-      list.unshift(key);
-      const meta = readJsonStore(ROWS_META_KEY, {});
-      meta[key] = Date.now();
-      list.slice(ROWS_VIDEO_LIMIT).forEach((old) => {
-        delete meta[old];
-        try {
-          storeWrite("", ROWS_PREFIX + old);
-        } catch (_) {
-        }
-      });
-      writeJsonStore(ROWS_META_KEY, meta);
-      writeJsonStore(ROWS_INDEX_KEY, list.slice(0, ROWS_VIDEO_LIMIT));
-      return stored;
+      log("DEBUG", `Row cache saved to slot ${slot} (${storedRowsMap.size} rows, ${payload.length} chars)`);
+      const nextSlots = activeSlots.filter((item) => item.slot !== slot && item.key !== key);
+      nextSlots.unshift({ slot, key, updatedAt: now });
+      writeJsonStore(ROWS_SLOTS_KEY, nextSlots.slice(0, ROWS_VIDEO_LIMIT));
+      return storedRowsMap;
     } catch (error) {
       log("WARN", `Row cache write skipped: ${safeError(error)}`);
       return null;
@@ -682,14 +777,17 @@
   function writeCache(key, value, ttlMs) {
     if (config.cacheEntries <= 0 || !hasStore()) return;
     try {
+      const now = Date.now();
       const cache = loadCache();
-      const entries = cache.entries.filter((item) => item?.key !== key);
+      const entries = cache.entries.filter(
+        (item) => item?.key !== key && (!item?.expiresAt || item.expiresAt > now)
+      );
       entries.unshift(
         Object.assign(
           {
             key,
-            createdAt: Date.now(),
-            expiresAt: ttlMs ? Date.now() + ttlMs : 0
+            createdAt: now,
+            expiresAt: ttlMs ? now + ttlMs : 0
           },
           value
         )
